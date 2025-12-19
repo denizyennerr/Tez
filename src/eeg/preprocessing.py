@@ -54,8 +54,7 @@ class CHBMITPreprocessor:
     
     # Default 10-patient subset 
     DEFAULT_SUBSET = [
-        'chb01', 'chb02', 'chb03', 'chb04', 'chb05',
-        'chb06', 'chb07', 'chb08', 'chb09', 'chb10'
+        'chb01'
     ]
     
     # Multi-scale window lengths (seconds)
@@ -99,7 +98,7 @@ class CHBMITPreprocessor:
         """
         self.base_dir = Path(base_dir)
         self.output_dir = Path(output_dir)
-        self.subject_subset = subject_subset if subject_subset is not None else self.DEFAULT_SUBSET
+        self.subject_subset = self.DEFAULT_SUBSET
         self.bad_channel_variance_threshold = bad_channel_variance_threshold
         self.bad_channel_flat_threshold = bad_channel_flat_threshold
         self.interictal_threshold_sec = interictal_threshold_sec
@@ -359,6 +358,7 @@ class CHBMITPreprocessor:
         """
         bad_channels = []
         data = raw.get_data()
+
         
         for idx, ch_name in enumerate(raw.ch_names):
             ch_data = data[idx, :]
@@ -562,14 +562,18 @@ class CHBMITPreprocessor:
         np.ndarray
             Normalized data array
         """
+       
         # Clip outliers first to prevent artifacts from skewing the mean
         data_clipped = np.clip(data, -500, 500)
         
         # Z-score normalization per channel
         mean = np.mean(data_clipped, axis=1, keepdims=True)
         std = np.std(data_clipped, axis=1, keepdims=True)
+        
+        #end region
         data_normalized = (data_clipped - mean) / (std + 1e-6)  # Add epsilon to avoid div by zero
         
+
         return data_normalized
     
     def preprocess_file(
@@ -684,6 +688,39 @@ class CHBMITPreprocessor:
                 continue
         
         return results
+
+    
+    def canonical_channels(self, raw: Raw) -> Raw:
+        """
+        Select and reorder channels to match the canonical list.
+        Renames slightly different channels (e.g., 'T8-P8-1' -> 'T8-P8') 
+        to ensure consistency across patients.
+        """
+        # 1. Standardize current channel names (remove spaces, dots, -1 suffixes)
+        # This handles the messy naming in CHB-MIT (e.g. "FP1-F7." vs "FP1-F7")
+        # rename_map = {}
+        rename_map = {ch: ch.replace('.', '').strip() for ch in raw.ch_names}
+        # Handle duplicates like 'T8-P8-1' -> 'T8-P8'
+        rename_map = {ch: ch.replace('-0', '').replace('-1', '') for ch in rename_map if ch.replace('-0', '').replace('-1', '') in self.CANONICAL_CHANNELS}
+        
+        # Apply renaming
+        if rename_map:
+            raw.rename_channels(rename_map)
+
+        # 2. Check for missing channels
+        current_channels = raw.ch_names
+        missing = [ch for ch in self.CANONICAL_CHANNELS if ch not in current_channels]
+        
+        if len(missing) > 0:
+            # For a thesis, strictness is good. Raise error if critical channels are missing.
+            raise ValueError(f"Subject is missing canonical channels: {missing}")
+            
+        # 3. Pick and Reorder
+        # This ensures the matrix shape is always (23, Time)
+        raw_ordered = raw.copy().pick_channels(self.CANONICAL_CHANNELS, ordered=True)
+        
+        return raw_ordered
+      
     
     def save_preprocessed(
         self,
@@ -723,21 +760,7 @@ class CHBMITPreprocessor:
             
             # Save as compressed numpy array
             np.savez_compressed(str(output_path), **save_dict)
-    
-    def process_all_subjects(self):
-        """
-        Process all subjects in the subset.
-        """
-        for subject_id in self.subject_subset:
-            print(f"Processing {subject_id}...")
-            
-            try:
-                results = self.preprocess_subject(subject_id)
-                self.save_preprocessed(subject_id, results)
-                print(f"  Processed {len(results)} files for {subject_id}")
-            except Exception as e:
-                print(f"  Error processing {subject_id}: {e}")
-                continue
+
 
 
 # ============================================================================
@@ -882,34 +905,3 @@ def load_preprocessed_windows(
     
     return windows_array, labels_array
 
-from src.eeg.preprocessing import CHBMITPreprocessor, create_patient_split, load_preprocessed_windows
-from pathlib import Path
-
-# Preprocess all subjects
-preprocessor = CHBMITPreprocessor(
-    base_dir="data/chb-mit",
-    output_dir="data/preprocessed"
-)
-preprocessor.process_all_subjects()
-
-# Create patient-based split
-subjects = preprocessor.DEFAULT_SUBSET  # ['chb01', ..., 'chb10']
-train_subjects, val_subjects, test_subjects = create_patient_split(
-    subjects, 
-    train_ratio=0.8, 
-    val_ratio=0.1, 
-    test_ratio=0.1,
-    random_seed=42
-)
-
-# Load preprocessed windows
-preprocessed_dir = Path("data/preprocessed")
-train_windows, train_labels = load_preprocessed_windows(
-    preprocessed_dir, train_subjects, window_scale='5s'
-)
-val_windows, val_labels = load_preprocessed_windows(
-    preprocessed_dir, val_subjects, window_scale='5s'
-)
-test_windows, test_labels = load_preprocessed_windows(
-    preprocessed_dir, test_subjects, window_scale='5s'
-)
