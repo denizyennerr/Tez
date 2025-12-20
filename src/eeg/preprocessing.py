@@ -712,11 +712,9 @@ class CHBMITPreprocessor:
         missing = [ch for ch in self.CANONICAL_CHANNELS if ch not in current_channels]
         
         if len(missing) > 0:
-            # For a thesis, strictness is good. Raise error if critical channels are missing.
             raise ValueError(f"Subject is missing canonical channels: {missing}")
             
         # 3. Pick and Reorder
-        # This ensures the matrix shape is always (23, Time)
         raw_ordered = raw.copy().pick_channels(self.CANONICAL_CHANNELS, ordered=True)
         
         return raw_ordered
