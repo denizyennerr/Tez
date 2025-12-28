@@ -1,34 +1,10 @@
-"""
-CHB-MIT EEG Preprocessing Module (Deterministic, Benchmark-Comparable)
-
-Conservative, reproducible preprocessing pipeline for CHB-MIT:
-- Load EDF files from base_dir
-- Objective bad-channel detection (variance + peak-to-peak)
-- Drop bad channels (no interpolation)
-- Align channels to fixed canonical bipolar order (supports duplicates)
-- Filtering: 5th-order Butterworth bandpass 0.5–60 Hz (zero-phase)
-- Notch filtering: 60 Hz
-- Downsampling: 256 Hz -> 128 Hz
-- Parse CHB-MIT summary files for seizure annotations
-- Data selection:
-    * 10-patient subset (default matches common modern benchmark subsets)
-    * interictal defined as >= 4 hours away from any seizure
-- Multi-scale sliding window extraction for decision-fusion:
-    at each step t, extract last {2,4,8,10} seconds ending at t
-- Save outputs as .npz with metadata in data/preprocessed
-
-Notes:
-- This module intentionally does NOT do ICA/ASR/manual cleaning.
-- Bad channel handling is objective and deterministic.
-"""
-
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 import mne
 from mne.io import Raw
-
+import gc
 
 class CHBMITPreprocessor:
     """
@@ -49,16 +25,24 @@ class CHBMITPreprocessor:
         'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2',
         'FP2-F8', 'F8-T8', 'T8-P8', 'P8-O2',
         'FZ-CZ', 'CZ-PZ',
-        'P7-T7', 'T7-FT9', 'FT9-FT10', 'FT10-T8', 'T8-P8'
-    ]
+        'P7-T7', 'T7-FT9', 'FT9-FT10', 'FT10-T8']
     
     # Default 10-patient subset 
     DEFAULT_SUBSET = [
-        'chb01'
+        'chb01', 
+        'chb03',
+        'chb05',
+        'chb09',
+        'chb10',
+        'chb14',
+        'chb19',
+        'chb20',
+        'chb21',
+        'chb23',
     ]
     
     # Multi-scale window lengths (seconds)
-    WINDOW_LENGTHS = [2.0, 5.0, 8.0, 10.0]
+    WINDOW_LENGTHS = [1.0, 2.0, 5.0, 8.0, 10.0]
     
     # Target sampling rate after downsampling
     TARGET_SFREQ = 128.0  # Hz
@@ -67,16 +51,19 @@ class CHBMITPreprocessor:
     SOURCE_SFREQ = 256.0  # Hz
     
     # Interictal threshold (4 hours in seconds)
-    INTERICTAL_THRESHOLD_SEC = 4 * 3600  # 14400 seconds
+    # INTERICTAL_THRESHOLD_SEC = 4 * 3600  # 14400 seconds
     
     def __init__(
         self,
         base_dir: str,
         output_dir: str,
         subject_subset: Optional[List[str]] = None,
-        bad_channel_variance_threshold: float = 1e-10,
-        bad_channel_flat_threshold: float = 1e-6,
-        interictal_threshold_sec: float = 4 * 3600
+        bad_channel_variance_threshold: float = 1.0,
+        bad_channel_flat_threshold: float = 5.0,
+        interictal_threshold_sec: float = 4 * 3600,
+        use_stratified_sampling: bool = False,
+        seizure_stride_sec: float = 1.0,
+        interictal_stride_sec: float = 10.0
     ):
         """
         Initialize CHB-MIT preprocessor.
@@ -102,9 +89,12 @@ class CHBMITPreprocessor:
         self.bad_channel_variance_threshold = bad_channel_variance_threshold
         self.bad_channel_flat_threshold = bad_channel_flat_threshold
         self.interictal_threshold_sec = interictal_threshold_sec
+        self.use_stratified_sampling = use_stratified_sampling
+        self.seizure_stride_sec = seizure_stride_sec
+        self.interictal_stride_sec = interictal_stride_sec
         
-        # Create output directory if it doesn't exist
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Create output directory in data_dir/preprocessed/
+        self.output_dir = Path(parents=True, exist_ok=True)
         
         # Cache for parsed summary files
         self._summary_cache: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
@@ -290,7 +280,7 @@ class CHBMITPreprocessor:
         Parameters
         ----------
         subject_id : str
-            Subject ID (e.g., 'chb01')
+            Subject ID (e.g., 'chb01', 'chb03', 'chb05', 'chb09', 'chb10', 'chb14', 'chb19', 'chb20', 'chb21', 'chb23')
             
         Returns
         -------
@@ -341,6 +331,38 @@ class CHBMITPreprocessor:
                 return False
         
         return True
+
+    def canonical_channels(self, raw: Raw) -> Raw:
+        """
+        Select and reorder channels to match the canonical list.
+        Renames slightly different channels (e.g., 'T8-P8-1' -> 'T8-P8') 
+        to ensure consistency across patients.
+        """
+        # 1. Standardize current channel names (remove spaces, dots, -1 suffixes)
+        # This handles the messy naming in CHB-MIT (e.g. "FP1-F7." vs "FP1-F7")
+        rename_map = {}
+
+        for ch in raw.ch_names:
+            clean_ch = ch.replace('.', '').strip()
+            clean_ch = re.sub(r'-\d+$', '', clean_ch)
+
+            if clean_ch in self.CANONICAL_CHANNELS:
+                rename_map[ch] = clean_ch
+           
+        # Apply renaming
+        if rename_map:
+            raw.rename_channels(rename_map)
+
+        # 2. Check for missing channels
+        missing = [ch for ch in self.CANONICAL_CHANNELS if ch not in raw.ch_names]
+        
+        if len(missing):
+            raise ValueError(f"Subject is missing canonical channels: {missing}")
+            
+        # 3. Pick and Reorder
+        raw_ordered = raw.copy().pick_channels(self.CANONICAL_CHANNELS, ordered=True)
+        
+        return raw_ordered
     
     def detect_bad_channels(self, raw: Raw) -> List[str]:
         """
@@ -358,6 +380,8 @@ class CHBMITPreprocessor:
         """
         bad_channels = []
         data = raw.get_data()
+
+        variances = np.var(data, axis=1)
 
         
         for idx, ch_name in enumerate(raw.ch_names):
@@ -427,16 +451,37 @@ class CHBMITPreprocessor:
         Raw
             Downsampled Raw object at 128 Hz
         """
-        if abs(raw.info['sfreq'] - self.SOURCE_SFREQ) > 1.0:
-            raise ValueError(
-                f"Expected source sampling rate {self.SOURCE_SFREQ} Hz, "
-                f"got {raw.info['sfreq']} Hz"
-            )
-        
         # Downsample using MNE's resample method
-        raw_resampled = raw.copy().resample(self.TARGET_SFREQ, npad='auto')
-        
+        raw_resampled = raw.copy().resample(self.TARGET_SFREQ, npad='auto') 
         return raw_resampled
+
+    def normalize_window(self, window_data: np.ndarray) -> np.ndarray:
+        """
+        Apply Z-score normalization with outlier clipping.
+        Clips outliers first to prevent artifacts from skewing the mean.
+        
+        Parameters
+        ----------
+        window_data : np.ndarray
+            Data array of shape (n_channels, n_samples)
+            
+        Returns
+        -------
+        np.ndarray
+            Normalized data array
+        """
+       
+        # Clip outliers first to prevent artifacts from skewing the mean
+        data_clipped = np.clip(window_data, -500, 500)
+        
+        # Z-score normalization per channel
+        mean = np.mean(data_clipped, axis=1, keepdims=True)
+        std = np.std(data_clipped, axis=1, keepdims=True)
+        
+        #end region
+        data_normalized = (data_clipped - mean) / (std + 1e-6)  # Add epsilon to avoid div by zero
+        
+        return data_normalized
     
     def extract_multi_scale_windows(
         self,
@@ -468,7 +513,7 @@ class CHBMITPreprocessor:
             - labels: binary array of shape (n_timepoints,) where:
                 1 = seizure, 0 = interictal, -1 = preictal/postictal (exclude)
         """
-        data = raw.get_data()  # Shape: (n_channels, n_samples)
+        data = raw.get_data()  # raw filtered data
         sfreq = raw.info['sfreq']
         n_channels, n_total_samples = data.shape
         
@@ -544,362 +589,252 @@ class CHBMITPreprocessor:
                     window_data = window_data[:, :window_samples]
                 
                 windows_dict[f'{int(window_length)}s'][t_idx] = window_data
+
+                window_normalized = self.normalized_window(window_data)
+                windows_dict[f'{int(window_length)}s'][t_idx] = window_normalized
         
         return windows_dict, labels
-    
-    def normalize_data(self, data: np.ndarray) -> np.ndarray:
-        """
-        Apply Z-score normalization with outlier clipping.
-        Clips outliers first to prevent artifacts from skewing the mean.
-        
-        Parameters
-        ----------
-        data : np.ndarray
-            Data array of shape (n_channels, n_samples)
-            
-        Returns
-        -------
-        np.ndarray
-            Normalized data array
-        """
-       
-        # Clip outliers first to prevent artifacts from skewing the mean
-        data_clipped = np.clip(data, -500, 500)
-        
-        # Z-score normalization per channel
-        mean = np.mean(data_clipped, axis=1, keepdims=True)
-        std = np.std(data_clipped, axis=1, keepdims=True)
-        
-        #end region
-        data_normalized = (data_clipped - mean) / (std + 1e-6)  # Add epsilon to avoid div by zero
-        
-
-        return data_normalized
     
     def preprocess_file(
-        self,
-        edf_path: Path,
-        seizure_times: List[Tuple[float, float]],
-        global_seizure_times: List[Tuple[float, float]],
-        cumulative_start_time: float
-    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-        """
-        Preprocess a single EDF file.
-        
-        Parameters
-        ----------
-        edf_path : Path
-            Path to EDF file
-        seizure_times : List[Tuple[float, float]]
-            List of (start, end) seizure times in seconds (relative to file start)
-        global_seizure_times : List[Tuple[float, float]]
-            All seizure times in absolute (global) time across all files
-        cumulative_start_time : float
-            Cumulative start time of this file (absolute time)
+            self,
+            edf_path: Path,
+            seizure_times: List[Tuple[float, float]],
+            global_seizure_times: List[Tuple[float, float]],
+            cumulative_start_time: float
+        ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+            """
+            Preprocess a single EDF file.
             
-        Returns
-        -------
-        Tuple[Dict[str, np.ndarray], np.ndarray]
-            (windows_dict, labels) where windows_dict contains multi-scale windows
-        """
-        # 1. Load EDF
-        raw = mne.io.read_raw_edf(
-            str(edf_path),
-            preload=True,
-            verbose='error'
-        )
-        
-        # 2. Detect and drop bad channels (no interpolation)
-        bad_channels = self.detect_bad_channels(raw)
-        if bad_channels:
-            raw.drop_channels(bad_channels)
-        
-        # 3. Apply filtering (bandpass + notch)
-        raw = self.apply_filtering(raw)
-        
-        # 4. Downsample (256 Hz → 128 Hz)
-        raw = self.downsample(raw)
-        
-        # 5. Z-score normalization (per-file, per-channel)
-        data = raw.get_data()
-        data_normalized = self.normalize_data(data)
-        
-        # Update raw object with normalized data
-        raw._data = data_normalized
-        
-        # 6. Extract multi-scale sliding windows
-        windows_dict, labels = self.extract_multi_scale_windows(
-            raw, seizure_times, global_seizure_times, cumulative_start_time
-        )
-        
-        return windows_dict, labels
-    
-    def preprocess_subject(self, subject_id: str) -> Dict[str, Tuple[Dict[str, np.ndarray], np.ndarray]]:
-        """
-        Preprocess all EDF files for a subject.
-        Tracks cumulative time across files for global seizure tracking.
-        
-        Parameters
-        ----------
-        subject_id : str
-            Subject ID (e.g., 'chb01')
-            
-        Returns
-        -------
-        Dict[str, Tuple[Dict[str, np.ndarray], np.ndarray]]
-            Dictionary mapping EDF filenames to (windows_dict, labels) tuples
-        """
-        subject_dir = self.base_dir / subject_id
-        
-        if not subject_dir.exists():
-            raise FileNotFoundError(f"Subject directory not found: {subject_dir}")
-        
-        # Parse summary file for seizure annotations
-        seizure_map = self.parse_summary_file(subject_dir)
-        
-        # Get global seizure times (absolute time across all files)
-        global_seizure_times = self.get_global_seizure_times(subject_id)
-        
-        # Get cumulative offsets for each file
-        cumulative_offsets = self.get_cumulative_offsets(subject_id)
-        
-        # Get all EDF files
-        edf_files = sorted(subject_dir.glob("*.edf"))
-        
-        results = {}
-        
-        for edf_path in edf_files:
-            edf_filename = edf_path.name
-            
-            # Get seizure times for this file (empty list if no seizures)
-            seizure_times = seizure_map.get(edf_filename, [])
-            
-            # Get cumulative start time for this file
-            cumulative_start_time = cumulative_offsets.get(edf_filename, 0.0)
-            
-            try:
-                windows_dict, labels = self.preprocess_file(
-                    edf_path, seizure_times, global_seizure_times, cumulative_start_time
-                )
-                results[edf_filename] = (windows_dict, labels)
+            Parameters
+            ----------
+            edf_path : Path
+                Path to EDF file
+            seizure_times : List[Tuple[float, float]]
+                List of (start, end) seizure times in seconds (relative to file start)
+            global_seizure_times : List[Tuple[float, float]]
+                All seizure times in absolute (global) time across all files
+            cumulative_start_time : float
+                Cumulative start time of this file (absolute time)
                 
+            Returns
+            -------
+            Tuple[Dict[str, np.ndarray], np.ndarray]
+                (windows_dict, labels) where windows_dict contains multi-scale windows
+            """
+            # 1. Load EDF
+            raw = mne.io.read_raw_edf(
+                str(edf_path),
+                preload=True,
+                verbose='error'
+            )
+
+            raw.apply_function(lambda x: x * 1e6)
+
+            try:
+                raw = self.canonical_channels(raw)
             except Exception as e:
-                print(f"Error processing {edf_filename}: {e}")
-                continue
-        
-        return results
+                print(f"Error canonicalizing channels: {e}")
+                return None, None
+            # 2. Apply filtering (bandpass + notch)
+            raw = self.apply_filtering(raw)
+                    
+            # 3. Detect and drop bad channels (no interpolation)
+            bad_channels = self.detect_bad_channels(raw)
 
-    
-    def canonical_channels(self, raw: Raw) -> Raw:
-        """
-        Select and reorder channels to match the canonical list.
-        Renames slightly different channels (e.g., 'T8-P8-1' -> 'T8-P8') 
-        to ensure consistency across patients.
-        """
-        # 1. Standardize current channel names (remove spaces, dots, -1 suffixes)
-        # This handles the messy naming in CHB-MIT (e.g. "FP1-F7." vs "FP1-F7")
-        # rename_map = {}
-        rename_map = {ch: ch.replace('.', '').strip() for ch in raw.ch_names}
-        # Handle duplicates like 'T8-P8-1' -> 'T8-P8'
-        rename_map = {ch: ch.replace('-0', '').replace('-1', '') for ch in rename_map if ch.replace('-0', '').replace('-1', '') in self.CANONICAL_CHANNELS}
-        
-        # Apply renaming
-        if rename_map:
-            raw.rename_channels(rename_map)
-
-        # 2. Check for missing channels
-        current_channels = raw.ch_names
-        missing = [ch for ch in self.CANONICAL_CHANNELS if ch not in current_channels]
-        
-        if len(missing) > 0:
-            raise ValueError(f"Subject is missing canonical channels: {missing}")
+            if len(bad_channels) == len(raw.ch_names):
+                print(f"  Warning: All channels in {edf_path.name} look flat/noisy.")
+                print("  -> Skipping this file to prevent crash.")
+                return None, None
             
-        # 3. Pick and Reorder
-        raw_ordered = raw.copy().pick_channels(self.CANONICAL_CHANNELS, ordered=True)
-        
-        return raw_ordered
-      
-    
-    def save_preprocessed(
-        self,
-        subject_id: str,
-        results: Dict[str, Tuple[Dict[str, np.ndarray], np.ndarray]]
-    ):
-        """
-        Save preprocessed data to output directory.
-        
-        Parameters
-        ----------
-        subject_id : str
-            Subject ID (e.g., 'chb01')
-        results : Dict[str, Tuple[Dict[str, np.ndarray], np.ndarray]]
-            Dictionary mapping EDF filenames to (windows_dict, labels) tuples
-        """
-        subject_output_dir = self.output_dir / subject_id
-        subject_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        for edf_filename, (windows_dict, labels) in results.items():
-            # Create output filename (remove .edf extension, add .npz)
-            output_filename = edf_filename.replace('.edf', '.npz')
-            output_path = subject_output_dir / output_filename
+            if bad_channels:
+                raw.drop_channels(bad_channels)
+                print(f"Dropped {len(bad_channels)} bad channels")
             
-            # Prepare metadata
+            # 4. Downsample (256 Hz → 128 Hz)
+            raw = self.downsample(raw)
+            
+            return self.extract_multi_scale_windows(raw, seizure_times, global_seizure_times, cumulative_start_time)
+            
+    def save_single_file(self, subject_id, edf_filename, windows_dict, labels):
+            subject_output_dir = self.output_dir / subject_id
+            subject_output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = subject_output_dir / edf_filename.replace('.edf', '.npz')
+            
             metadata = {
                 'sfreq': self.TARGET_SFREQ,
-                'n_channels': len(self.CANONICAL_CHANNELS),
                 'channel_names': self.CANONICAL_CHANNELS,
-                'window_lengths': self.WINDOW_LENGTHS,
-                'interictal_threshold_sec': self.interictal_threshold_sec,
                 'labels': labels
             }
+            np.savez_compressed(str(output_path), **{**windows_dict, **metadata})
+            print(f"  -> Saved {output_path.name}")
+
+    def save_subject(self, subject_id: str):
+        subject_dir = self.base_dir / subject_id
+        if not subject_dir.exists(): 
+            print(f"\nProcessing Subject: {subject_id}")
+            seizure_map = self.parse_summary_file(subject_dir)
+            global_seizure_times = self.get_global_seizure_times(subject_id)
+            cumulative_offsets = self.get_cumulative_offsets(subject_id)
             
-            # Add all window scales to save dict
-            save_dict = {**windows_dict, **metadata}
-            
-            # Save as compressed numpy array
-            np.savez_compressed(str(output_path), **save_dict)
-
-
-
-# ============================================================================
-# Data Splitting Functions (for binary classification)
-# ============================================================================
-
-def create_patient_split(
-    subject_ids: List[str],
-    train_ratio: float = 0.8,
-    val_ratio: float = 0.1,
-    test_ratio: float = 0.1,
-    random_seed: Optional[int] = None
-) -> Tuple[List[str], List[str], List[str]]:
-    """
-    Create train/val/test split by patient (Leave-One-Subject-Out style).
-    Ensures no data leakage by splitting at patient boundaries.
-    
-    Parameters
-    ----------
-    subject_ids : List[str]
-        List of subject IDs to split (e.g., ['chb01', 'chb02', ...])
-    train_ratio : float
-        Ratio of patients for training (default: 0.8)
-    val_ratio : float
-        Ratio of patients for validation (default: 0.1)
-    test_ratio : float
-        Ratio of patients for testing (default: 0.1)
-    random_seed : Optional[int]
-        Random seed for reproducibility (default: None)
-        
-    Returns
-    -------
-    Tuple[List[str], List[str], List[str]]
-        (train_subjects, val_subjects, test_subjects)
-        
-    Examples
-    --------
-    >>> subjects = ['chb01', 'chb02', ..., 'chb10']
-    >>> train, val, test = create_patient_split(subjects)
-    >>> # Train on patients 1-8, Val on patient 9, Test on patient 10
-    """
-    if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
-        raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
-    
-    if random_seed is not None:
-        np.random.seed(random_seed)
-    
-    # Shuffle subject IDs for random split
-    shuffled_subjects = subject_ids.copy()
-    if random_seed is not None:
-        np.random.shuffle(shuffled_subjects)
-    else:
-        # Deterministic shuffle based on subject IDs
-        shuffled_subjects = sorted(shuffled_subjects)
-    
-    n_subjects = len(shuffled_subjects)
-    n_train = int(n_subjects * train_ratio)
-    n_val = int(n_subjects * val_ratio)
-    n_test = n_subjects - n_train - n_val  # Remaining goes to test
-    
-    train_subjects = shuffled_subjects[:n_train]
-    val_subjects = shuffled_subjects[n_train:n_train + n_val]
-    test_subjects = shuffled_subjects[n_train + n_val:]
-    
-    return train_subjects, val_subjects, test_subjects
-
-
-def load_preprocessed_windows(
-    preprocessed_dir: Path,
-    subject_ids: List[str],
-    window_scale: str = '5s',
-    filter_labels: bool = True
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Load preprocessed windows from .npz files for specified subjects.
-    
-    Parameters
-    ----------
-    preprocessed_dir : Path
-        Path to preprocessed data directory
-    subject_ids : List[str]
-        List of subject IDs to load
-    window_scale : str
-        Window scale to load (e.g., '2s', '5s', '8s', '10s')
-    filter_labels : bool
-        If True, only return windows with labels 0 (interictal) or 1 (seizure).
-        Excludes preictal/postictal windows (label -1).
-        
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray]
-        (windows, labels) where:
-        - windows: shape (n_windows, n_channels, n_samples)
-        - labels: shape (n_windows,) with 0=interictal, 1=seizure
-    """
-    all_windows = []
-    all_labels = []
-    
-    for subject_id in subject_ids:
-        subject_dir = preprocessed_dir / subject_id
-        
-        if not subject_dir.exists():
-            print(f"Warning: Subject directory not found: {subject_dir}")
-            continue
-        
-        # Load all .npz files for this subject
-        npz_files = sorted(subject_dir.glob("*.npz"))
-        
-        for npz_path in npz_files:
+        for edf_path in sorted(subject_dir.glob("*.edf")):
+            print(f"  > Processing {edf_path.name}...")
             try:
-                data = np.load(npz_path)
-                
-                # Extract windows for specified scale
-                if window_scale not in data:
-                    print(f"Warning: Window scale {window_scale} not found in {npz_path}")
-                    continue
-                
-                windows = data[window_scale]  # Shape: (n_timepoints, n_channels, n_samples)
-                labels = data['labels']  # Shape: (n_timepoints,)
-                
-                # Filter labels if requested
-                if filter_labels:
-                    mask = (labels == 0) | (labels == 1)
-                    windows = windows[mask]
-                    labels = labels[mask]
-                    # Convert to binary: 0=interictal, 1=seizure
-                    labels = (labels == 1).astype(np.int32)
-                
-                all_windows.append(windows)
-                all_labels.append(labels)
-                
+                windows_dict, labels = self.preprocess_file(
+                    edf_path, 
+                    seizure_map.get(edf_path.name, []), 
+                    global_seizure_times, 
+                    cumulative_offsets.get(edf_path.name, 0.0)
+                    )
+                    
+                if windows_dict is None: continue
+
+                self.save_single_file(subject_id, edf_path.name, windows_dict, labels)
+                    
+                del windows_dict, labels
+                gc.collect()
+
             except Exception as e:
-                print(f"Error loading {npz_path}: {e}")
-                continue
+                print(f"  ❌ Error processing {edf_path.name}: {e}")
+
+# # ============================================================================
+# # Data Splitting Functions (for binary classification)
+# # ============================================================================
+
+# def create_patient_split(
+#     subject_ids: List[str],
+#     train_ratio: float = 0.8,
+#     val_ratio: float = 0.1,
+#     test_ratio: float = 0.1,
+#     random_seed: Optional[int] = None
+# ) -> Tuple[List[str], List[str], List[str]]:
+#     """
+#     Create train/val/test split by patient (Leave-One-Subject-Out style).
+#     Ensures no data leakage by splitting at patient boundaries.
     
-    if len(all_windows) == 0:
-        raise ValueError("No windows loaded from specified subjects")
+#     Parameters
+#     ----------
+#     subject_ids : List[str]
+#         List of subject IDs to split (e.g., ['chb01', 'chb02', ...])
+#     train_ratio : float
+#         Ratio of patients for training (default: 0.8)
+#     val_ratio : float
+#         Ratio of patients for validation (default: 0.1)
+#     test_ratio : float
+#         Ratio of patients for testing (default: 0.1)
+#     random_seed : Optional[int]
+#         Random seed for reproducibility (default: None)
+        
+#     Returns
+#     -------
+#     Tuple[List[str], List[str], List[str]]
+#         (train_subjects, val_subjects, test_subjects)
+        
+#     Examples
+#     --------
+#     >>> subjects = ['chb01', 'chb02', ..., 'chb10']
+#     >>> train, val, test = create_patient_split(subjects)
+#     >>> # Train on patients 1-8, Val on patient 9, Test on patient 10
+#     """
+#     if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+#         raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
     
-    # Concatenate all windows
-    windows_array = np.concatenate(all_windows, axis=0)
-    labels_array = np.concatenate(all_labels, axis=0)
+#     if random_seed is not None:
+#         np.random.seed(random_seed)
     
-    return windows_array, labels_array
+#     # Shuffle subject IDs for random split
+#     shuffled_subjects = subject_ids.copy()
+#     if random_seed is not None:
+#         np.random.shuffle(shuffled_subjects)
+#     else:
+#         # Deterministic shuffle based on subject IDs
+#         shuffled_subjects = sorted(shuffled_subjects)
+    
+#     n_subjects = len(shuffled_subjects)
+#     n_train = int(n_subjects * train_ratio)
+#     n_val = int(n_subjects * val_ratio)
+#     n_test = n_subjects - n_train - n_val  # Remaining goes to test
+    
+#     train_subjects = shuffled_subjects[:n_train]
+#     val_subjects = shuffled_subjects[n_train:n_train + n_val]
+#     test_subjects = shuffled_subjects[n_train + n_val:]
+    
+#     return train_subjects, val_subjects, test_subjects
+
+
+# def load_preprocessed_windows(
+#     preprocessed_dir: Path,
+#     subject_ids: List[str],
+#     window_scale: str = '5s',
+#     filter_labels: bool = True
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     """
+#     Load preprocessed windows from .npz files for specified subjects.
+    
+#     Parameters
+#     ----------
+#     preprocessed_dir : Path
+#         Path to preprocessed data directory
+#     subject_ids : List[str]
+#         List of subject IDs to load
+#     window_scale : str
+#         Window scale to load (e.g., '2s', '5s', '8s', '10s')
+#     filter_labels : bool
+#         If True, only return windows with labels 0 (interictal) or 1 (seizure).
+#         Excludes preictal/postictal windows (label -1).
+        
+#     Returns
+#     -------
+#     Tuple[np.ndarray, np.ndarray]
+#         (windows, labels) where:
+#         - windows: shape (n_windows, n_channels, n_samples)
+#         - labels: shape (n_windows,) with 0=interictal, 1=seizure
+#     """
+#     all_windows = []
+#     all_labels = []
+    
+#     for subject_id in subject_ids:
+#         subject_dir = preprocessed_dir / subject_id
+        
+#         if not subject_dir.exists():
+#             print(f"Warning: Subject directory not found: {subject_dir}")
+#             continue
+        
+#         # Load all .npz files for this subject
+#         npz_files = sorted(subject_dir.glob("*.npz"))
+        
+#         for npz_path in npz_files:
+#             try:
+#                 data = np.load(npz_path)
+                
+#                 # Extract windows for specified scale
+#                 if window_scale not in data:
+#                     print(f"Warning: Window scale {window_scale} not found in {npz_path}")
+#                     continue
+                
+#                 windows = data[window_scale]  # Shape: (n_timepoints, n_channels, n_samples)
+#                 labels = data['labels']  # Shape: (n_timepoints,)
+                
+#                 # Filter labels if requested
+#                 if filter_labels:
+#                     mask = (labels == 0) | (labels == 1)
+#                     windows = windows[mask]
+#                     labels = labels[mask]
+#                     # Convert to binary: 0=interictal, 1=seizure
+#                     labels = (labels == 1).astype(np.int32)
+                
+#                 all_windows.append(windows)
+#                 all_labels.append(labels)
+                
+#             except Exception as e:
+#                 print(f"Error loading {npz_path}: {e}")
+#                 continue
+    
+#     if len(all_windows) == 0:
+#         raise ValueError("No windows loaded from specified subjects")
+    
+#     # Concatenate all windows
+#     windows_array = np.concatenate(all_windows, axis=0)
+#     labels_array = np.concatenate(all_labels, axis=0)
+    
+#     return windows_array, labels_array
 
