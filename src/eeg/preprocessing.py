@@ -51,15 +51,15 @@ class CHBMITPreprocessor:
     SOURCE_SFREQ = 256.0  # Hz
     
     # Interictal threshold (4 hours in seconds)
-    # INTERICTAL_THRESHOLD_SEC = 4 * 3600  # 14400 seconds
+    INTERICTAL_THRESHOLD_SEC = 4 * 3600  # 14400 seconds
     
     def __init__(
         self,
         base_dir: str,
         output_dir: str,
         subject_subset: Optional[List[str]] = None,
-        bad_channel_variance_threshold: float = 1.0,
-        bad_channel_flat_threshold: float = 5.0,
+        bad_channel_variance_threshold: float = 1e-10,
+        bad_channel_flat_threshold: float = 1e-6,
         interictal_threshold_sec: float = 4 * 3600,
         use_stratified_sampling: bool = False,
         seizure_stride_sec: float = 1.0,
@@ -92,9 +92,12 @@ class CHBMITPreprocessor:
         self.use_stratified_sampling = use_stratified_sampling
         self.seizure_stride_sec = seizure_stride_sec
         self.interictal_stride_sec = interictal_stride_sec
+
+        #self base dir
+        self.base_dir = Path(base_dir)
         
         # Create output directory in data_dir/preprocessed/
-        self.output_dir = Path(parents=True, exist_ok=True)
+        self.output_dir = Path(output_dir)
         
         # Cache for parsed summary files
         self._summary_cache: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
@@ -334,36 +337,65 @@ class CHBMITPreprocessor:
 
     def canonical_channels(self, raw: Raw) -> Raw:
         """
-        Select and reorder channels to match the canonical list.
-        Renames slightly different channels (e.g., 'T8-P8-1' -> 'T8-P8') 
-        to ensure consistency across patients.
+        Enforces canonical channels by 'pulling' exactly one match for each 
+        canonical name from the raw file.
+        
+        Guarantees exactly 22 channels in the output.
         """
-        # 1. Standardize current channel names (remove spaces, dots, -1 suffixes)
-        # This handles the messy naming in CHB-MIT (e.g. "FP1-F7." vs "FP1-F7")
+        print(f"DEBUG: Initial channels ({len(raw.ch_names)}): {raw.ch_names}")
+
+        # 1. Pre-calculate the 'clean' name for every channel in the raw file
+        #    Map: CleanName -> List of (OriginalName, OriginalIndex)
+        available_channels = {}
+        for idx, ch in enumerate(raw.ch_names):
+            # Aggressive cleaning: remove MNE suffixes (-0, -1), dots, and spaces
+            clean = re.sub(r'-\d+$', '', ch)
+            clean = clean.replace('.', '').strip()
+            
+            if clean not in available_channels:
+                available_channels[clean] = []
+            available_channels[clean].append((ch, idx))
+
+        # 2. Build the strict list of indices to keep
+        #    Iterate ONLY through your target list (22 items)
+        indices_to_keep = []
         rename_map = {}
 
-        for ch in raw.ch_names:
-            clean_ch = ch.replace('.', '').strip()
-            clean_ch = re.sub(r'-\d+$', '', clean_ch)
+        for target_name in self.CANONICAL_CHANNELS:
+            if target_name in available_channels:
+                candidates = available_channels[target_name]
+                
+                # Rule: Always take the FIRST occurrence found in the file
+                # candidates[0] is (Name, Index)
+                chosen_name, chosen_idx = candidates[0]
+                
+                indices_to_keep.append(chosen_idx)
+                rename_map[chosen_name] = target_name
+                
+                # Log if we are dropping duplicates
+                if len(candidates) > 1:
+                    others = [c[0] for c in candidates[1:]]
+                    print(f"  ! Duplicate found for {target_name}. Keeping {chosen_name} (idx {chosen_idx}), Dropping {others}")
+            else:
+                raise ValueError(f"Missing required canonical channel: {target_name}")
 
-            if clean_ch in self.CANONICAL_CHANNELS:
-                rename_map[ch] = clean_ch
-           
-        # Apply renaming
-        if rename_map:
-            raw.rename_channels(rename_map)
+        # 3. EXECUTE: Pick only the 22 chosen indices
+        #    This forcefully deletes index 22 (T8-P8-1) because it is not in the list.
+        raw.pick(indices_to_keep)
 
-        # 2. Check for missing channels
-        missing = [ch for ch in self.CANONICAL_CHANNELS if ch not in raw.ch_names]
-        
-        if len(missing):
-            raise ValueError(f"Subject is missing canonical channels: {missing}")
-            
-        # 3. Pick and Reorder
-        raw_ordered = raw.copy().pick_channels(self.CANONICAL_CHANNELS, ordered=True)
-        
-        return raw_ordered
-    
+        # 4. Rename valid channels to their canonical names
+        raw.rename_channels(rename_map)
+
+        # 5. Reorder strictly
+        raw.reorder_channels(self.CANONICAL_CHANNELS)
+
+        # Final Verification
+        if len(raw.ch_names) != 22:
+            raise ValueError(f"CRITICAL ERROR: Result has {len(raw.ch_names)} channels, expected 22.")
+
+        print(f"DEBUG: Final channels ({len(raw.ch_names)}): {raw.ch_names}")
+        return raw
+
     def detect_bad_channels(self, raw: Raw) -> List[str]:
         """
         Objective bad channel detection based on variance and flatness.
@@ -479,7 +511,7 @@ class CHBMITPreprocessor:
         std = np.std(data_clipped, axis=1, keepdims=True)
         
         #end region
-        data_normalized = (data_clipped - mean) / (std + 1e-6)  # Add epsilon to avoid div by zero
+        data_normalized = (data_clipped - mean) / (std + 1e-18)  # Add epsilon to avoid div by zero
         
         return data_normalized
     
@@ -590,7 +622,7 @@ class CHBMITPreprocessor:
                 
                 windows_dict[f'{int(window_length)}s'][t_idx] = window_data
 
-                window_normalized = self.normalized_window(window_data)
+                window_normalized = self.normalize_window(window_data)
                 windows_dict[f'{int(window_length)}s'][t_idx] = window_normalized
         
         return windows_dict, labels
@@ -628,23 +660,21 @@ class CHBMITPreprocessor:
                 verbose='error'
             )
 
-            raw.apply_function(lambda x: x * 1e6)
-
             try:
                 raw = self.canonical_channels(raw)
             except Exception as e:
                 print(f"Error canonicalizing channels: {e}")
-                return None, None
+            
+            bad_channels = self.detect_bad_channels(raw)
+            if bad_channels:
+                print(f"  Dropping {len(bad_channels)} bad channels: {bad_channels}")
+                raw.drop_channels(bad_channels)
+            
             # 2. Apply filtering (bandpass + notch)
             raw = self.apply_filtering(raw)
                     
             # 3. Detect and drop bad channels (no interpolation)
             bad_channels = self.detect_bad_channels(raw)
-
-            if len(bad_channels) == len(raw.ch_names):
-                print(f"  Warning: All channels in {edf_path.name} look flat/noisy.")
-                print("  -> Skipping this file to prevent crash.")
-                return None, None
             
             if bad_channels:
                 raw.drop_channels(bad_channels)
@@ -655,7 +685,7 @@ class CHBMITPreprocessor:
             
             return self.extract_multi_scale_windows(raw, seizure_times, global_seizure_times, cumulative_start_time)
             
-    def save_single_file(self, subject_id, edf_filename, windows_dict, labels):
+    def save_preprocessed(self, subject_id, edf_filename, windows_dict, labels):
             subject_output_dir = self.output_dir / subject_id
             subject_output_dir.mkdir(parents=True, exist_ok=True)
             output_path = subject_output_dir / edf_filename.replace('.edf', '.npz')
@@ -670,6 +700,7 @@ class CHBMITPreprocessor:
 
     def save_subject(self, subject_id: str):
         subject_dir = self.base_dir / subject_id
+
         if not subject_dir.exists(): 
             print(f"\nProcessing Subject: {subject_id}")
             seizure_map = self.parse_summary_file(subject_dir)
@@ -688,7 +719,7 @@ class CHBMITPreprocessor:
                     
                 if windows_dict is None: continue
 
-                self.save_single_file(subject_id, edf_path.name, windows_dict, labels)
+                self.save_preprocessed(subject_id, edf_path.name, windows_dict, labels)
                     
                 del windows_dict, labels
                 gc.collect()
@@ -696,145 +727,85 @@ class CHBMITPreprocessor:
             except Exception as e:
                 print(f"  ❌ Error processing {edf_path.name}: {e}")
 
-# # ============================================================================
-# # Data Splitting Functions (for binary classification)
-# # ============================================================================
+# ============================================================================
+# Data Splitting Functions
+# ============================================================================
 
-# def create_patient_split(
-#     subject_ids: List[str],
-#     train_ratio: float = 0.8,
-#     val_ratio: float = 0.1,
-#     test_ratio: float = 0.1,
-#     random_seed: Optional[int] = None
-# ) -> Tuple[List[str], List[str], List[str]]:
-#     """
-#     Create train/val/test split by patient (Leave-One-Subject-Out style).
-#     Ensures no data leakage by splitting at patient boundaries.
-    
-#     Parameters
-#     ----------
-#     subject_ids : List[str]
-#         List of subject IDs to split (e.g., ['chb01', 'chb02', ...])
-#     train_ratio : float
-#         Ratio of patients for training (default: 0.8)
-#     val_ratio : float
-#         Ratio of patients for validation (default: 0.1)
-#     test_ratio : float
-#         Ratio of patients for testing (default: 0.1)
-#     random_seed : Optional[int]
-#         Random seed for reproducibility (default: None)
+    def create_patient_split(
+        subject_ids: List[str],
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        test_ratio: float = 0.1,
+        random_seed: Optional[int] = None
+    ) -> Tuple[List[str], List[str], List[str]]:
+        if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+            raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
         
-#     Returns
-#     -------
-#     Tuple[List[str], List[str], List[str]]
-#         (train_subjects, val_subjects, test_subjects)
+        if random_seed is not None:
+            np.random.seed(random_seed)
         
-#     Examples
-#     --------
-#     >>> subjects = ['chb01', 'chb02', ..., 'chb10']
-#     >>> train, val, test = create_patient_split(subjects)
-#     >>> # Train on patients 1-8, Val on patient 9, Test on patient 10
-#     """
-#     if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
-#         raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
-    
-#     if random_seed is not None:
-#         np.random.seed(random_seed)
-    
-#     # Shuffle subject IDs for random split
-#     shuffled_subjects = subject_ids.copy()
-#     if random_seed is not None:
-#         np.random.shuffle(shuffled_subjects)
-#     else:
-#         # Deterministic shuffle based on subject IDs
-#         shuffled_subjects = sorted(shuffled_subjects)
-    
-#     n_subjects = len(shuffled_subjects)
-#     n_train = int(n_subjects * train_ratio)
-#     n_val = int(n_subjects * val_ratio)
-#     n_test = n_subjects - n_train - n_val  # Remaining goes to test
-    
-#     train_subjects = shuffled_subjects[:n_train]
-#     val_subjects = shuffled_subjects[n_train:n_train + n_val]
-#     test_subjects = shuffled_subjects[n_train + n_val:]
-    
-#     return train_subjects, val_subjects, test_subjects
+        shuffled_subjects = subject_ids.copy()
+        if random_seed is not None:
+            np.random.shuffle(shuffled_subjects)
+        else:
+            shuffled_subjects = sorted(shuffled_subjects)
+        
+        n_subjects = len(shuffled_subjects)
+        n_train = int(n_subjects * train_ratio)
+        n_val = int(n_subjects * val_ratio)
+        
+        train_subjects = shuffled_subjects[:n_train]
+        val_subjects = shuffled_subjects[n_train:n_train + n_val]
+        test_subjects = shuffled_subjects[n_train + n_val:]
+        
+        return train_subjects, val_subjects, test_subjects
 
-
-# def load_preprocessed_windows(
-#     preprocessed_dir: Path,
-#     subject_ids: List[str],
-#     window_scale: str = '5s',
-#     filter_labels: bool = True
-# ) -> Tuple[np.ndarray, np.ndarray]:
-#     """
-#     Load preprocessed windows from .npz files for specified subjects.
-    
-#     Parameters
-#     ----------
-#     preprocessed_dir : Path
-#         Path to preprocessed data directory
-#     subject_ids : List[str]
-#         List of subject IDs to load
-#     window_scale : str
-#         Window scale to load (e.g., '2s', '5s', '8s', '10s')
-#     filter_labels : bool
-#         If True, only return windows with labels 0 (interictal) or 1 (seizure).
-#         Excludes preictal/postictal windows (label -1).
+    def load_preprocessed_windows(
+        preprocessed_dir: Path,
+        subject_ids: List[str],
+        window_scale: str = '5s',
+        filter_labels: bool = True
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        all_windows = []
+        all_labels = []
         
-#     Returns
-#     -------
-#     Tuple[np.ndarray, np.ndarray]
-#         (windows, labels) where:
-#         - windows: shape (n_windows, n_channels, n_samples)
-#         - labels: shape (n_windows,) with 0=interictal, 1=seizure
-#     """
-#     all_windows = []
-#     all_labels = []
-    
-#     for subject_id in subject_ids:
-#         subject_dir = preprocessed_dir / subject_id
+        for subject_id in subject_ids:
+            subject_dir = preprocessed_dir / subject_id
+            
+            if not subject_dir.exists():
+                print(f"Warning: Subject directory not found: {subject_dir}")
+                continue
+            
+            npz_files = sorted(subject_dir.glob("*.npz"))
+            
+            for npz_path in npz_files:
+                try:
+                    data = np.load(npz_path)
+                    
+                    if window_scale not in data:
+                        print(f"Warning: Window scale {window_scale} not found in {npz_path}")
+                        continue
+                    
+                    windows = data[window_scale]
+                    labels = data['labels']
+                    
+                    if filter_labels:
+                        mask = (labels == 0) | (labels == 1)
+                        windows = windows[mask]
+                        labels = labels[mask]
+                        labels = (labels == 1).astype(np.int32)
+                    
+                    all_windows.append(windows)
+                    all_labels.append(labels)
+                    
+                except Exception as e:
+                    print(f"Error loading {npz_path}: {e}")
+                    continue
         
-#         if not subject_dir.exists():
-#             print(f"Warning: Subject directory not found: {subject_dir}")
-#             continue
+        if len(all_windows) == 0:
+            raise ValueError("No windows loaded from specified subjects")
         
-#         # Load all .npz files for this subject
-#         npz_files = sorted(subject_dir.glob("*.npz"))
+        windows_array = np.concatenate(all_windows, axis=0)
+        labels_array = np.concatenate(all_labels, axis=0)
         
-#         for npz_path in npz_files:
-#             try:
-#                 data = np.load(npz_path)
-                
-#                 # Extract windows for specified scale
-#                 if window_scale not in data:
-#                     print(f"Warning: Window scale {window_scale} not found in {npz_path}")
-#                     continue
-                
-#                 windows = data[window_scale]  # Shape: (n_timepoints, n_channels, n_samples)
-#                 labels = data['labels']  # Shape: (n_timepoints,)
-                
-#                 # Filter labels if requested
-#                 if filter_labels:
-#                     mask = (labels == 0) | (labels == 1)
-#                     windows = windows[mask]
-#                     labels = labels[mask]
-#                     # Convert to binary: 0=interictal, 1=seizure
-#                     labels = (labels == 1).astype(np.int32)
-                
-#                 all_windows.append(windows)
-#                 all_labels.append(labels)
-                
-#             except Exception as e:
-#                 print(f"Error loading {npz_path}: {e}")
-#                 continue
-    
-#     if len(all_windows) == 0:
-#         raise ValueError("No windows loaded from specified subjects")
-    
-#     # Concatenate all windows
-#     windows_array = np.concatenate(all_windows, axis=0)
-#     labels_array = np.concatenate(all_labels, axis=0)
-    
-#     return windows_array, labels_array
-
+        return windows_array, labels_array
