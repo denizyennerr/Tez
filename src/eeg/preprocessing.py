@@ -309,7 +309,7 @@ class CHBMITPreprocessor:
         Check if a time point is interictal (>= threshold away from any seizure).
         
         Parameters
-        ----------
+        ---------- 
         time_sec : float
             Time point in seconds
         seizure_times : List[Tuple[float, float]]
@@ -337,63 +337,57 @@ class CHBMITPreprocessor:
 
     def canonical_channels(self, raw: Raw) -> Raw:
         """
-        Enforces canonical channels by 'pulling' exactly one match for each 
-        canonical name from the raw file.
-        
-        Guarantees exactly 22 channels in the output.
+        Enforces canonical channels by pre-calculating all indices 
+        and performing a SINGLE pick operation at the end.
         """
         print(f"DEBUG: Initial channels ({len(raw.ch_names)}): {raw.ch_names}")
 
-        # 1. Pre-calculate the 'clean' name for every channel in the raw file
-        #    Map: CleanName -> List of (OriginalName, OriginalIndex)
+        # 1. Map Clean Names to Original Indices
         available_channels = {}
         for idx, ch in enumerate(raw.ch_names):
-            # Aggressive cleaning: remove MNE suffixes (-0, -1), dots, and spaces
-            clean = re.sub(r'-\d+$', '', ch)
-            clean = clean.replace('.', '').strip()
+            # Clean: remove -0, -1 suffixes, dots, spaces
+            clean = re.sub(r'-\d+$', '', ch).replace('.', '').strip()
             
             if clean not in available_channels:
                 available_channels[clean] = []
             available_channels[clean].append((ch, idx))
 
-        # 2. Build the strict list of indices to keep
-        #    Iterate ONLY through your target list (22 items)
         indices_to_keep = []
         rename_map = {}
 
+        # 2. Build the list of indices to keep (Pull method)
         for target_name in self.CANONICAL_CHANNELS:
             if target_name in available_channels:
                 candidates = available_channels[target_name]
                 
-                # Rule: Always take the FIRST occurrence found in the file
-                # candidates[0] is (Name, Index)
+                # Rule: Always take the FIRST occurrence (e.g., T8-P8-0 at idx 14)
+                # This implicitly drops the second occurrence (T8-P8-1 at idx 22)
                 chosen_name, chosen_idx = candidates[0]
                 
                 indices_to_keep.append(chosen_idx)
                 rename_map[chosen_name] = target_name
                 
-                # Log if we are dropping duplicates
+                # Debug log for duplicates
                 if len(candidates) > 1:
-                    others = [c[0] for c in candidates[1:]]
-                    print(f"  ! Duplicate found for {target_name}. Keeping {chosen_name} (idx {chosen_idx}), Dropping {others}")
+                    print(f"  ! Duplicate found for {target_name}. Keeping idx {chosen_idx}, Dropping others.")
             else:
                 raise ValueError(f"Missing required canonical channel: {target_name}")
 
-        # 3. EXECUTE: Pick only the 22 chosen indices
-        #    This forcefully deletes index 22 (T8-P8-1) because it is not in the list.
+        # --- CRITICAL: The operations below must be OUTSIDE the loop ---
+        
+        print(f"DEBUG: Picking {len(indices_to_keep)} indices: {indices_to_keep}")
+        
+        # 3. Perform the Atomic Pick (Removes T8-P8-1 and other unused channels)
         raw.pick(indices_to_keep)
-
-        # 4. Rename valid channels to their canonical names
+        
+        # 4. Rename (Renames T8-P8-0 back to T8-P8)
         raw.rename_channels(rename_map)
-
-        # 5. Reorder strictly
+        
+        # 5. Reorder
         raw.reorder_channels(self.CANONICAL_CHANNELS)
 
-        # Final Verification
-        if len(raw.ch_names) != 22:
-            raise ValueError(f"CRITICAL ERROR: Result has {len(raw.ch_names)} channels, expected 22.")
-
-        print(f"DEBUG: Final channels ({len(raw.ch_names)}): {raw.ch_names}")
+        print(f"SUCCESS: Final channels ({len(raw.ch_names)}): {raw.ch_names}")
+        
         return raw
 
     def detect_bad_channels(self, raw: Raw) -> List[str]:
