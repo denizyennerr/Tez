@@ -5,6 +5,7 @@ import numpy as np
 import mne
 from mne.io import Raw
 import gc
+from eeg.windowing import create_multi_scale_windows
 
 class CHBMITPreprocessor:
     """
@@ -60,6 +61,7 @@ class CHBMITPreprocessor:
         subject_subset: Optional[List[str]] = None,
         bad_channel_variance_threshold: float = 1e-10,
         bad_channel_flat_threshold: float = 1e-6,
+        bad_channel_high_amp_threshold: float = 500e-6,  
         interictal_threshold_sec: float = 4 * 3600,
         use_stratified_sampling: bool = False,
         seizure_stride_sec: float = 1.0,
@@ -85,35 +87,27 @@ class CHBMITPreprocessor:
         """
         self.base_dir = Path(base_dir)
         self.output_dir = Path(output_dir)
-        self.subject_subset = self.DEFAULT_SUBSET
+        self.subject_subset = subject_subset if subject_subset else self.DEFAULT_SUBSET
+        
+        # Artifact Thresholds
         self.bad_channel_variance_threshold = bad_channel_variance_threshold
         self.bad_channel_flat_threshold = bad_channel_flat_threshold
+        self.bad_channel_high_amp_threshold = bad_channel_high_amp_threshold
+        
         self.interictal_threshold_sec = interictal_threshold_sec
         self.use_stratified_sampling = use_stratified_sampling
         self.seizure_stride_sec = seizure_stride_sec
         self.interictal_stride_sec = interictal_stride_sec
 
-        #self base dir
-        self.base_dir = Path(base_dir)
-        
-        # Create output directory in data_dir/preprocessed/
-        self.output_dir = Path(output_dir)
-        
-        # Cache for parsed summary files
+        # Cache initialization
         self._summary_cache: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
-        
-        # Cache for all seizure times per subject (for interictal selection)
         self._all_seizure_times_cache: Dict[str, List[Tuple[float, float]]] = {}
-        
-        # Cache for global seizure times (absolute time across all files)
         self._global_seizure_times_cache: Dict[str, List[Tuple[float, float]]] = {}
-        
-        # Cache for file durations and cumulative offsets
         self._file_durations_cache: Dict[str, Dict[str, float]] = {}
         self._cumulative_offsets_cache: Dict[str, Dict[str, float]] = {}
     
     def parse_summary_file(self, subject_dir: Path) -> Dict[str, List[Tuple[float, float]]]:
-        """
+        """ 
         Parse CHB-MIT summary file to extract seizure annotations.
         
         Parameters
@@ -392,41 +386,20 @@ class CHBMITPreprocessor:
 
     def detect_bad_channels(self, raw: Raw) -> List[str]:
         """
-        Objective bad channel detection based on variance and flatness.
-        
-        Parameters
-        ----------
-        raw : Raw
-            MNE Raw object
-            
-        Returns
-        -------
-        List[str]
-            List of bad channel names
+        Only drops channels that are technically broken (flat/disconnected).
+        Does NOT drop channels just because they are noisy/muscular.
         """
         bad_channels = []
         data = raw.get_data()
-
-        variances = np.var(data, axis=1)
-
         
         for idx, ch_name in enumerate(raw.ch_names):
             ch_data = data[idx, :]
             
-            # Check variance (too low indicates dead/flat channel)
-            variance = np.var(ch_data)
-            if variance < self.bad_channel_variance_threshold:
+            # Only drop if the signal is essentially a flat line (Dead sensor)
+            if np.var(ch_data) < 1e-15:  # Extremely low variance
                 bad_channels.append(ch_name)
-                continue
-            
-            # Check peak-to-peak (too low indicates flat channel)
-            ptp = np.ptp(ch_data)
-            if ptp < self.bad_channel_flat_threshold:
-                bad_channels.append(ch_name)
-                continue
-        
+
         return bad_channels
-    
     
     def apply_filtering(self, raw: Raw) -> Raw:
         """
@@ -508,176 +481,62 @@ class CHBMITPreprocessor:
         data_normalized = (data_clipped - mean) / (std + 1e-18)  # Add epsilon to avoid div by zero
         
         return data_normalized
-    
-    def extract_multi_scale_windows(
-        self,
-        raw: Raw,
-        seizure_times: List[Tuple[float, float]],
-        global_seizure_times: List[Tuple[float, float]],
-        cumulative_start_time: float
-    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-        """
-        Extract multi-scale sliding windows for decision fusion.
-        At each time step t, extract last {2,5,8,10} seconds ending at t.
-        
-        Parameters
-        ----------
-        raw : Raw
-            MNE Raw object
-        seizure_times : List[Tuple[float, float]]
-            Seizure times for this file (relative to file start)
-        global_seizure_times : List[Tuple[float, float]]
-            All seizure times in absolute (global) time across all files
-        cumulative_start_time : float
-            Cumulative start time of this file (absolute time)
-            
-        Returns
-        -------
-        Tuple[Dict[str, np.ndarray], np.ndarray]
-            (windows_dict, labels) where:
-            - windows_dict: {window_length: array} with shape (n_timepoints, n_channels, n_samples)
-            - labels: binary array of shape (n_timepoints,) where:
-                1 = seizure, 0 = interictal, -1 = preictal/postictal (exclude)
-        """
-        data = raw.get_data()  # raw filtered data
+
+    def extract_multi_scale_windows(self, raw, seizure_times, global_seizure_times, cumulative_start_time):
+        data = raw.get_data()
         sfreq = raw.info['sfreq']
-        n_channels, n_total_samples = data.shape
         
-        # Calculate time points (every second, ending at each second)
-        # Extract windows ending at each second
-        time_points = np.arange(1.0, raw.times[-1] + 1.0, 1.0)  # Every 1 second
-        n_timepoints = len(time_points)
-        
-        # Initialize windows dictionary
-        windows_dict = {}
-        for window_length in self.WINDOW_LENGTHS:
-            window_samples = int(window_length * sfreq)
-            windows_dict[f'{int(window_length)}s'] = np.zeros(
-                (n_timepoints, n_channels, window_samples),
-                dtype=np.float32
-            )
-        
-        # Initialize labels
+        # 1. Define the Time Grid (Every 1 second)
+        time_points_sec = np.arange(1.0, raw.times[-1] + 1.0, 1.0)
+        time_indices = (time_points_sec * sfreq).astype(int)
+        n_timepoints = len(time_points_sec)
+
+        # 2. Generate Labels
         labels = np.zeros(n_timepoints, dtype=np.int32)
         
-        # Extract windows and labels
-        for t_idx, t_end in enumerate(time_points):
-            # Convert to absolute time
+        for i, t_end in enumerate(time_points_sec):
             t_abs = cumulative_start_time + t_end
             
-            # Check if this time point is in a seizure (using file-relative times for speed)
+            # Check Seizure
             is_seizure = False
-            for start_sec, end_sec in seizure_times:
-                if start_sec <= t_end <= end_sec:
+            for start, end in seizure_times:
+                if start <= t_end <= end:
+                    labels[i] = 1
                     is_seizure = True
-                    labels[t_idx] = 1
                     break
             
-            # If not seizure, check if interictal using global seizure times
+            # Check Interictal
             if not is_seizure:
                 if self.is_interictal(t_abs, global_seizure_times):
-                    labels[t_idx] = 0  # Interictal
+                    labels[i] = 0
                 else:
-                    labels[t_idx] = -1  # Preictal/postictal (exclude from training)
-            
-            # Extract windows ending at t_end
-            for window_length in self.WINDOW_LENGTHS:
-                window_samples = int(window_length * sfreq)
-                t_start = t_end - window_length
-                
-                # Calculate sample indices
-                start_sample = int(t_start * sfreq)
-                end_sample = int(t_end * sfreq)
-                
-                # Handle boundary conditions
-                if start_sample < 0:
-                    # Pad with zeros at the beginning
-                    pad_samples = -start_sample
-                    end_sample = min(end_sample, n_total_samples)
-                    window_data = data[:, 0:end_sample]
-                    padding = np.zeros((n_channels, pad_samples))
-                    window_data = np.concatenate([padding, window_data], axis=1)
-                elif end_sample > n_total_samples:
-                    # Pad with zeros at the end
-                    pad_samples = end_sample - n_total_samples
-                    start_sample = max(0, start_sample)
-                    window_data = data[:, start_sample:n_total_samples]
-                    padding = np.zeros((n_channels, pad_samples))
-                    window_data = np.concatenate([window_data, padding], axis=1)
-                else:
-                    window_data = data[:, start_sample:end_sample]
-                
-                # Ensure correct length
-                if window_data.shape[1] < window_samples:
-                    padding = np.zeros((n_channels, window_samples - window_data.shape[1]))
-                    window_data = np.concatenate([window_data, padding], axis=1)
-                elif window_data.shape[1] > window_samples:
-                    window_data = window_data[:, :window_samples]
-                
-                windows_dict[f'{int(window_length)}s'][t_idx] = window_data
-
-                window_normalized = self.normalize_window(window_data)
-                windows_dict[f'{int(window_length)}s'][t_idx] = window_normalized
-        
-        return windows_dict, labels
-    
-    def preprocess_file(
-            self,
-            edf_path: Path,
-            seizure_times: List[Tuple[float, float]],
-            global_seizure_times: List[Tuple[float, float]],
-            cumulative_start_time: float
-        ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-            """
-            Preprocess a single EDF file.
-            
-            Parameters
-            ----------
-            edf_path : Path
-                Path to EDF file
-            seizure_times : List[Tuple[float, float]]
-                List of (start, end) seizure times in seconds (relative to file start)
-            global_seizure_times : List[Tuple[float, float]]
-                All seizure times in absolute (global) time across all files
-            cumulative_start_time : float
-                Cumulative start time of this file (absolute time)
-                
-            Returns
-            -------
-            Tuple[Dict[str, np.ndarray], np.ndarray]
-                (windows_dict, labels) where windows_dict contains multi-scale windows
-            """
-            # 1. Load EDF
-            raw = mne.io.read_raw_edf(
-                str(edf_path),
-                preload=True,
-                verbose='error'
-            )
-
-            try:
-                raw = self.canonical_channels(raw)
-            except Exception as e:
-                print(f"Error canonicalizing channels: {e}")
-            
-            bad_channels = self.detect_bad_channels(raw)
-            if bad_channels:
-                print(f"  Dropping {len(bad_channels)} bad channels: {bad_channels}")
-                raw.drop_channels(bad_channels)
-            
-            # 2. Apply filtering (bandpass + notch)
-            raw = self.apply_filtering(raw)
+                    labels[i] = -1 # Exclude
                     
-            # 3. Detect and drop bad channels (no interpolation)
-            bad_channels = self.detect_bad_channels(raw)
+        # 3. Generate Raw Windows (Delegated to windowing.py)
+        print(f"   -> Slicing windows for {n_timepoints} timepoints...")
+        windows_dict = create_multi_scale_windows(
+            data=data,
+            time_indices=time_indices,
+            window_lengths_sec=self.WINDOW_LENGTHS,
+            sfreq=sfreq
+        )
+
+        # 4. Apply Normalization (Crucial Step Added)
+        # We apply Z-score normalization to the whole batch efficiently
+        print(f"   -> Normalizing windows...")
+
+        for key, windows_batch in windows_dict.items():            
+            # Clip outliers (vectorized)
+            windows_batch = np.clip(windows_batch, -500, 500)
             
-            if bad_channels:
-                raw.drop_channels(bad_channels)
-                print(f"Dropped {len(bad_channels)} bad channels")
+            # Calculate mean/std along the time axis (axis=2)
+            mean = np.mean(windows_batch, axis=2, keepdims=True)
+            std = np.std(windows_batch, axis=2, keepdims=True)
             
-            # 4. Downsample (256 Hz → 128 Hz)
-            raw = self.downsample(raw)
-            
-            return self.extract_multi_scale_windows(raw, seizure_times, global_seizure_times, cumulative_start_time)
+            # Z-Score
+            windows_dict[key] = (windows_batch - mean) / (std + 1e-18)
+
+        return windows_dict, labels
             
     def save_preprocessed(self, subject_id, edf_filename, windows_dict, labels):
             subject_output_dir = self.output_dir / subject_id
