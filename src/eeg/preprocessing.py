@@ -7,6 +7,7 @@ from mne.io import Raw
 import gc
 from eeg.windowing import create_multi_scale_windows
 
+
 class CHBMITPreprocessor:
     """
     Deterministic preprocessing class for CHB-MIT Scalp EEG dataset.
@@ -538,6 +539,80 @@ class CHBMITPreprocessor:
 
         return windows_dict, labels
             
+    def preprocess_file(
+        self,
+        edf_path: Path,
+        seizure_times: List[Tuple[float, float]],
+        global_seizure_times: List[Tuple[float, float]],
+        cumulative_start_time: float
+    ):
+        """
+        Preprocess a single EDF file: load, clean, filter, downsample, and window.
+        
+        Parameters
+        ----------
+        edf_path : Path
+            Path to the EDF file
+        seizure_times : List[Tuple[float, float]]
+            Seizure times for this file (file-relative seconds)
+        global_seizure_times : List[Tuple[float, float]]
+            All seizure times for the subject (absolute seconds)
+        cumulative_start_time : float
+            Cumulative time offset for this file (seconds)
+            
+        Returns
+        -------
+        Tuple[Dict[str, np.ndarray], np.ndarray] or (None, None)
+            windows_dict: Dictionary mapping window lengths to arrays
+            labels: Label array for each window
+        """
+        try:
+            # 1. Load EDF file
+            print(f"     -> Loading EDF...")
+            raw = mne.io.read_raw_edf(str(edf_path), preload=True, verbose='error')
+            
+            # 2. Align to canonical channels
+            print(f"     -> Aligning to canonical channels...")
+            raw = self.canonical_channels(raw)
+            
+            # 3. Detect and remove bad channels
+            print(f"     -> Detecting bad channels...")
+            bad_channels = self.detect_bad_channels(raw)
+            if bad_channels:
+                print(f"        ! Removing bad channels: {bad_channels}")
+                raw.drop_channels(bad_channels)
+                # If critical channels were removed, we might skip this file
+                if len(raw.ch_names) < 18:  # Keep files with at least 18 good channels
+                    print(f"        ⚠️ Too many bad channels ({len(bad_channels)}), skipping file")
+                    return None, None
+            
+            # 4. Apply filtering
+            print(f"     -> Applying bandpass (0.5-60 Hz) and notch (60 Hz) filters...")
+            raw = self.apply_filtering(raw)
+            
+            # 5. Downsample to 128 Hz
+            print(f"     -> Downsampling to {self.TARGET_SFREQ} Hz...")
+            raw = self.downsample(raw)
+            
+            # 6. Extract multi-scale windows
+            print(f"     -> Extracting multi-scale windows...")
+            windows_dict, labels = self.extract_multi_scale_windows(
+                raw=raw,
+                seizure_times=seizure_times,
+                global_seizure_times=global_seizure_times,
+                cumulative_start_time=cumulative_start_time
+            )
+            
+            # 7. Clean up
+            del raw
+            gc.collect()
+            
+            return windows_dict, labels
+            
+        except Exception as e:
+            print(f"        ❌ Error in preprocess_file: {e}")
+            return None, None
+
     def save_preprocessed(self, subject_id, edf_filename, windows_dict, labels):
             subject_output_dir = self.output_dir / subject_id
             subject_output_dir.mkdir(parents=True, exist_ok=True)
@@ -552,14 +627,29 @@ class CHBMITPreprocessor:
             print(f"  -> Saved {output_path.name}")
 
     def save_subject(self, subject_id: str):
+        """
+        Process all EDF files for a single subject.
+        
+        Parameters
+        ----------
+        subject_id : str
+            Subject ID (e.g., 'chb01')
+        """
         subject_dir = self.base_dir / subject_id
 
-        if not subject_dir.exists(): 
-            print(f"\nProcessing Subject: {subject_id}")
-            seizure_map = self.parse_summary_file(subject_dir)
-            global_seizure_times = self.get_global_seizure_times(subject_id)
-            cumulative_offsets = self.get_cumulative_offsets(subject_id)
-            
+        # Check if subject directory exists
+        if not subject_dir.exists():
+            print(f"  ❌ Error: Subject directory not found: {subject_dir}")
+            return
+        
+        print(f"\nProcessing Subject: {subject_id}")
+        
+        # Load subject metadata once
+        seizure_map = self.parse_summary_file(subject_dir)
+        global_seizure_times = self.get_global_seizure_times(subject_id)
+        cumulative_offsets = self.get_cumulative_offsets(subject_id)
+        
+        # Process each EDF file
         for edf_path in sorted(subject_dir.glob("*.edf")):
             print(f"  > Processing {edf_path.name}...")
             try:
@@ -568,12 +658,13 @@ class CHBMITPreprocessor:
                     seizure_map.get(edf_path.name, []), 
                     global_seizure_times, 
                     cumulative_offsets.get(edf_path.name, 0.0)
-                    )
-                    
-                if windows_dict is None: continue
+                )
+                
+                if windows_dict is None:
+                    continue
 
                 self.save_preprocessed(subject_id, edf_path.name, windows_dict, labels)
-                    
+                
                 del windows_dict, labels
                 gc.collect()
 
@@ -584,62 +675,76 @@ class CHBMITPreprocessor:
 # Data Splitting Functions
 # ============================================================================
 
-    def create_patient_split(
-        subject_ids: List[str],
-        train_ratio: float = 0.8,
-        val_ratio: float = 0.1,
-        test_ratio: float = 0.1,
-        random_seed: Optional[int] = None
-    ) -> Tuple[List[str], List[str], List[str]]:
-        if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
-            raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
-        
-        if random_seed is not None:
-            np.random.seed(random_seed)
-        
-        shuffled_subjects = subject_ids.copy()
-        if random_seed is not None:
-            np.random.shuffle(shuffled_subjects)
-        else:
-            shuffled_subjects = sorted(shuffled_subjects)
-        
-        n_subjects = len(shuffled_subjects)
-        n_train = int(n_subjects * train_ratio)
-        n_val = int(n_subjects * val_ratio)
-        
-        train_subjects = shuffled_subjects[:n_train]
-        val_subjects = shuffled_subjects[n_train:n_train + n_val]
-        test_subjects = shuffled_subjects[n_train + n_val:]
-        
-        return train_subjects, val_subjects, test_subjects
+def create_patient_split(
+    subject_ids: List[str],
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
+    random_seed: Optional[int] = None
+) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Split subjects into train, validation, and test sets.
+    """
+    if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+        raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
+    
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    
+    shuffled_subjects = list(subject_ids).copy() # Ensure it's a list
+    if random_seed is not None:
+        np.random.shuffle(shuffled_subjects)
+    else:
+        shuffled_subjects = sorted(shuffled_subjects)
+    
+    n_subjects = len(shuffled_subjects)
+    n_train = int(n_subjects * train_ratio)
+    n_val = int(n_subjects * val_ratio)
+    
+    train_subjects = shuffled_subjects[:n_train]
+    val_subjects = shuffled_subjects[n_train:n_train + n_val]
+    test_subjects = shuffled_subjects[n_train + n_val:]
+    
+    return train_subjects, val_subjects, test_subjects
 
-    def load_preprocessed_windows(
-        preprocessed_dir: Path,
-        subject_ids: List[str],
-        window_scale: str = '5s',
-        filter_labels: bool = True
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        all_windows = []
-        all_labels = []
+
+def load_preprocessed_windows(
+    preprocessed_dir: Path,
+    subject_ids: List[str],
+    window_scale: str = '5s',
+    filter_labels: bool = True
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load and concatenate preprocessed windows for a list of subjects.
+    """
+    all_windows = []
+    all_labels = []
+    
+    # Ensure preprocessed_dir is a Path object
+    preprocessed_dir = Path(preprocessed_dir)
+    
+    for subject_id in subject_ids:
+        subject_dir = preprocessed_dir / subject_id
         
-        for subject_id in subject_ids:
-            subject_dir = preprocessed_dir / subject_id
-            
-            if not subject_dir.exists():
-                print(f"Warning: Subject directory not found: {subject_dir}")
-                continue
-            
-            npz_files = sorted(subject_dir.glob("*.npz"))
-            
-            for npz_path in npz_files:
-                try:
-                    data = np.load(npz_path)
-                    
-                    if window_scale not in data:
-                        print(f"Warning: Window scale {window_scale} not found in {npz_path}")
-                        continue
-                    
-                    windows = data[window_scale]
+        if not subject_dir.exists():
+            print(f"Warning: Subject directory not found: {subject_dir}")
+            continue
+        
+        npz_files = sorted(subject_dir.glob("*.npz"))
+        
+        for npz_path in npz_files:
+            try:
+                data = np.load(npz_path)
+                
+                if window_scale not in data:
+                    print(f"Warning: Window scale {window_scale} not found in {npz_path}")
+                    continue
+                
+                windows = data[window_scale]
+                
+                # NOTE: This assumes your preprocessing saved a 'labels' key.
+                # If your current preprocessing doesn't save labels, this line will fail later.
+                if 'labels' in data:
                     labels = data['labels']
                     
                     if filter_labels:
@@ -648,17 +753,27 @@ class CHBMITPreprocessor:
                         labels = labels[mask]
                         labels = (labels == 1).astype(np.int32)
                     
-                    all_windows.append(windows)
                     all_labels.append(labels)
-                    
-                except Exception as e:
-                    print(f"Error loading {npz_path}: {e}")
-                    continue
-        
-        if len(all_windows) == 0:
-            raise ValueError("No windows loaded from specified subjects")
-        
-        windows_array = np.concatenate(all_windows, axis=0)
+                else:
+                    # Fallback if no labels exist (e.g. unsupervised training)
+                    if filter_labels: 
+                        print(f"Warning: No 'labels' found in {npz_path}, skipping label filtering.")
+                
+                all_windows.append(windows)
+                
+            except Exception as e:
+                print(f"Error loading {npz_path}: {e}")
+                continue
+    
+    if len(all_windows) == 0:
+        # Return empty arrays instead of crashing if specific subjects have no data
+        return np.array([]), np.array([])
+    
+    windows_array = np.concatenate(all_windows, axis=0)
+    
+    if all_labels:
         labels_array = np.concatenate(all_labels, axis=0)
-        
-        return windows_array, labels_array
+    else:
+        labels_array = np.array([])
+    
+    return windows_array, labels_array
