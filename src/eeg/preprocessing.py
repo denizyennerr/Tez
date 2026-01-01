@@ -583,7 +583,7 @@ class CHBMITPreprocessor:
                 raw.drop_channels(bad_channels)
                 # If critical channels were removed, we might skip this file
                 if len(raw.ch_names) < 18:  # Keep files with at least 18 good channels
-                    print(f"        ⚠️ Too many bad channels ({len(bad_channels)}), skipping file")
+                    print(f" Too many bad channels ({len(bad_channels)}), skipping file")
                     return None, None
             
             # 4. Apply filtering
@@ -610,7 +610,7 @@ class CHBMITPreprocessor:
             return windows_dict, labels
             
         except Exception as e:
-            print(f"        ❌ Error in preprocess_file: {e}")
+            print(f" Error in preprocess_file: {e}")
             return None, None
 
     def save_preprocessed(self, subject_id, edf_filename, windows_dict, labels):
@@ -629,17 +629,13 @@ class CHBMITPreprocessor:
     def save_subject(self, subject_id: str):
         """
         Process all EDF files for a single subject.
-        
-        Parameters
-        ----------
-        subject_id : str
-            Subject ID (e.g., 'chb01')
+        Resumes progress by skipping files that already exist.
         """
         subject_dir = self.base_dir / subject_id
 
         # Check if subject directory exists
         if not subject_dir.exists():
-            print(f"  ❌ Error: Subject directory not found: {subject_dir}")
+            print(f" Error: Subject directory not found: {subject_dir}")
             return
         
         print(f"\nProcessing Subject: {subject_id}")
@@ -651,7 +647,17 @@ class CHBMITPreprocessor:
         
         # Process each EDF file
         for edf_path in sorted(subject_dir.glob("*.edf")):
+            
+            # --- RESUME LOGIC ---
+            output_filename = edf_path.name.replace('.edf', '.npz')
+            output_path = self.output_dir / subject_id / output_filename
+
+            if output_path.exists():
+                print(f"  -> Skipping {edf_path.name} (Already processed)")
+                continue  # <--- THIS IS THE CRITICAL FIX
+            
             print(f"  > Processing {edf_path.name}...")
+
             try:
                 windows_dict, labels = self.preprocess_file(
                     edf_path, 
@@ -669,8 +675,7 @@ class CHBMITPreprocessor:
                 gc.collect()
 
             except Exception as e:
-                print(f"  ❌ Error processing {edf_path.name}: {e}")
-
+                print(f" Error processing {edf_path.name}: {e}")
 # ============================================================================
 # Data Splitting Functions
 # ============================================================================

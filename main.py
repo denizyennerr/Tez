@@ -13,11 +13,11 @@ from eeg import create_multi_scale_windows, CHBMITPreprocessor
 
 def run_pipeline():
     # 1. Define Paths
-    base_dir = Path("uvtez/data/chb-mit")
-    output_dir = Path("uvtez/data/preprocessed")
+    base_dir = Path("data/chb-mit")
+    output_dir = Path("data/preprocessed")
     
     if not base_dir.exists():
-        print(f"❌ Error: Data directory not found at {base_dir.resolve()}")
+        print(f" Error: Data directory not found at {base_dir.resolve()}")
         return
 
     print(f"Input Directory: {base_dir.resolve()}")
