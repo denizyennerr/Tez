@@ -1,14 +1,50 @@
+import sys
+import os
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-import numpy as np
 from pathlib import Path
 from typing import Tuple, List, Dict
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, f1_score
-from eeg.models import KANSeizureDetector
 
+# Get current working directory
+current_dir = Path(os.getcwd()).resolve()
+
+if 'uvtez' in str(current_dir):
+    # Find the part of the path in 'uvtez'
+    while current_dir.name != 'uvtez' and current_dir.parent != current_dir:
+        current_dir = current_dir.parent
+    project_root = current_dir
+else:
+    project_root = Path(os.getcwd()).resolve()
+
+# Define paths
+src_path = project_root / 'src'
+DATA_PATH = project_root / 'data' / 'preprocessed'  
+
+# Add paths to sys.path
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+if str(src_path) not in sys.path:
+    sys.path.append(str(src_path))
+
+print(f" Project Root: {project_root}")
+print(f" Data Path:    {DATA_PATH}")
+
+# Import model after path setup
+try:
+    from src.eeg.models import KANSeizureDetector
+    print(" Success! Imported via 'src.eeg.models'")
+except ImportError:
+    try:
+        from eeg.models import KANSeizureDetector
+        print(" Success! Imported via 'eeg.models'")
+    except ImportError as e:
+        print(f" Failed to import model. Error: {e}")
+        sys.exit(1) 
 
 # HYPERPARAMETERS
 SEED = 42
@@ -18,13 +54,14 @@ LEARNING_RATE = 0.0001
 WEIGHT_DECAY = 1e-4
 GRID_SIZE = 5
 DROPOUT = 0.2
-N_TRAIN = 3
-N_VAL = 1
-N_TEST = 1
-DATA_PATH = Path("data/preprocessed")
 WINDOW_SIZE_KEY = '2s'
 L1_LAMBDA = 1e-5
 ENTROPY_LAMBDA = 1e-5
+
+# SUBJECT-LEVEL CROSS-VALIDATION
+N_TRAIN = 3
+N_VAL = 1
+N_TEST = 1
 
 # Setting the seed
 torch.manual_seed(SEED)
@@ -36,7 +73,7 @@ def load_data(data_path: Path, window_size_key: str) -> Dict[str, Dict[str, List
     Load data from the preprocessed directory.
     """
     data_by_subject = {}
-    for file_path in data_path.glob("*.npz"):
+    for file_path in data_path.glob("**/*.npz"):
         try:
             # Extract subject ID 
             subject_id = file_path.stem.split('_')[0]
@@ -53,7 +90,7 @@ def load_data(data_path: Path, window_size_key: str) -> Dict[str, Dict[str, List
             else:
                 print(f" Skipping {file_path.name}: Missing '{window_size_key}' or 'labels'")
                 
-        except (OSError, KeyError, ValueError, TypeError) as e:
+        except (OSError, KeyError) as e:
             print(f" Error loading {file_path.name}: {e}")
     
     return data_by_subject
@@ -104,7 +141,7 @@ def create_patient_split(subject_ids: List[str], n_train: int = N_TRAIN, n_val: 
     """    
     Split subjects into train, validation, and test sets.
     """
-    total_needed = n_train + n_val + n_test  # Use parameters!
+    total_needed = n_train + n_val + n_test  
     n_subjects = len(subject_ids)
 
     if n_subjects < total_needed:
@@ -229,9 +266,9 @@ if __name__ == "__main__":
     # Split subjects into train, validation, and test sets
     train_subj, val_subj, test_subj = create_patient_split(subject_ids)
 
-    print(f"   Train subjects: {train_subj}")
-    print(f"   Val subjects:   {val_subj}")
-    print(f"   Test subjects:  {test_subj}")
+    print(f" Train subjects: {train_subj}")
+    print(f" Val subjects:   {val_subj}")
+    print(f" Test subjects:  {test_subj}")
     
     # Create datasets
     print("\n Creating datasets...")
@@ -293,7 +330,6 @@ if __name__ == "__main__":
     print(f"\n   Test Loss: {test_loss:.4f}")
     print(f"   Test Accuracy: {test_acc:.4f}")
     print(f"   Test F1: {test_f1:.4f}")
-
 
 
     # Save model and results
