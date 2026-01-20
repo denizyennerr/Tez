@@ -1,8 +1,7 @@
-from os import path
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 from pathlib import Path
 from typing import Tuple, List, Dict
@@ -19,9 +18,9 @@ LEARNING_RATE = 0.0001
 WEIGHT_DECAY = 1e-4
 GRID_SIZE = 5
 DROPOUT = 0.2
-TRAIN_RATIO = 0.8
-VAL_RATIO = 0.1
-TEST_RATIO = 0.1
+N_TRAIN = 3
+N_VAL = 1
+N_TEST = 1
 DATA_PATH = Path("data/preprocessed")
 WINDOW_SIZE_KEY = '2s'
 L1_LAMBDA = 1e-5
@@ -54,7 +53,7 @@ def load_data(data_path: Path, window_size_key: str) -> Dict[str, Dict[str, List
             else:
                 print(f" Skipping {file_path.name}: Missing '{window_size_key}' or 'labels'")
                 
-        except (OSError, KeyError, ValueError, np.exceptions.DTypeError) as e:
+        except (OSError, KeyError, ValueError, TypeError) as e:
             print(f" Error loading {file_path.name}: {e}")
     
     return data_by_subject
@@ -73,6 +72,9 @@ def create_dataset_from_subjects(subjects: List[str], data_dict: Dict) -> Tensor
         if subj in data_dict:
             X_list.extend(data_dict[subj]['X'])
             Y_list.extend(data_dict[subj]['Y'])
+    
+    if not X_list or not Y_list:
+        raise ValueError("No data found for any subject")
 
     X_np = np.concatenate(X_list, axis=0)
     Y_np = np.concatenate(Y_list, axis=0)
@@ -82,7 +84,7 @@ def create_dataset_from_subjects(subjects: List[str], data_dict: Dict) -> Tensor
     Y_tensor = torch.tensor(Y_np, dtype=torch.float32)
     
     # Flatten if necessary (Batch, Time, Channels) -> (Batch, Features)
-    if X_tensor.dim() > 3:
+    if X_tensor.dim() == 3:
         X_tensor = X_tensor.view(X_tensor.size(0), -1)
     elif X_tensor.dim() == 2:
         pass
@@ -96,114 +98,33 @@ def create_dataset_from_subjects(subjects: List[str], data_dict: Dict) -> Tensor
         
     return TensorDataset(X_tensor, Y_tensor)
 
-# CREATE PATIENT SPLIT FUNCTION
-def create_patient_split(subject_ids: List[str], train_ratio: float = 0.6, 
-                        val_ratio: float = 0.2, test_ratio: float = 0.2):
-    # Validate ratios
-    if not np.isclose(train_ratio + val_ratio + test_ratio, 1.0):
-        raise ValueError(f"Ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}")
-    
+# SUBJECT-LEVEL CROSS-VALIDATION
+
+def create_patient_split(subject_ids: List[str], n_train: int = N_TRAIN, n_val: int = N_VAL, n_test: int = N_TEST) -> Tuple[List[str], List[str], List[str]]:
+    """    
+    Split subjects into train, validation, and test sets.
+    """
+    total_needed = n_train + n_val + n_test  # Use parameters!
     n_subjects = len(subject_ids)
-    n_train = int(n_subjects * train_ratio)
-    n_val = int(n_subjects * val_ratio)
-    n_test = n_subjects - n_train - n_val  # Ensure all subjects are used
-    
-    if n_subjects < n_train + n_val + n_test:
+
+    if n_subjects < total_needed:
         raise ValueError(f"Not enough subjects: need {total_needed}, have {n_subjects}")
-    
+
     shuffled = subject_ids.copy()
     np.random.shuffle(shuffled)
     
-    train_subj = shuffled[:n_train]
-    val_subj = shuffled[n_train:n_train + n_val]
-    test_subj = shuffled[n_train + n_val:n_train + n_val + n_test]
+    # Split subjects into train, validation, and test sets
+    train_end = n_train
+    val_end = train_end + n_val
+    test_end = n_train + n_val + n_test
+
+    train_subj = shuffled[:train_end]
+    val_subj = shuffled[train_end:val_end]
+    test_subj = shuffled[val_end:test_end]
     
     return train_subj, val_subj, test_subj
 
-# # TRAINING LOOP FUNCTION
-
-def train_kan_model(model, train_loader, val_loader, NUM_EPOCHS=10, lr=0.0001, device='cpu'):
-    # Add history lists
-    train_loss_history = []
-    val_loss_history = []
-    val_acc_history = []
-    val_f1_history = []
-
-    criterion = nn.BCEWithLogitsLoss() 
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.8)
-
-    print(f"Starting training on {device}...")
-
-    for epoch in range(NUM_EPOCHS):
-        model.train()
-        train_loss = 0
-        train_acc = 0
-
-        for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-
-            optimizer.zero_grad()
-            logits = model(X_batch)
-            loss = criterion(logits, y_batch)
-
-            # Add regularization loss (unique to KAN)
-            reg_loss = model.kan.regularization_loss(L1_LAMBDA, ENTROPY_LAMBDA)
-            total_loss = loss + reg_loss
-
-            total_loss.backward()
-            optimizer.step()
-
-            train_loss += total_loss.item()
-
-            # Calculate accuracy
-            preds = (torch.sigmoid(logits) > 0.5).float()
-            train_acc += (preds == y_batch).float().mean().item()
-
-        # Validation
-        model.eval()
-        val_loss = 0
-        all_preds = []
-        all_labels = []
-
-        with torch.no_grad():
-            for X_batch, y_batch in val_loader:
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                logits = model(X_batch)
-                loss = criterion(logits, y_batch)
-                val_loss += loss.item()
-
-                preds = (torch.sigmoid(logits) > 0.5).float()
-                all_preds.extend(preds.cpu().numpy().flatten())
-                all_labels.extend(y_batch.cpu().numpy().flatten())
-
-        # 2. Calculate averages
-        if len(train_loader) == 0:
-             raise ValueError("Train loader is empty")
-        if len(val_loader) == 0:
-            raise ValueError("Validation loader is empty")
-
-        avg_train_loss = train_loss / len(train_loader)
-        avg_val_loss = val_loss / len(val_loader)
-
-        # 3. Store them in the lists
-        train_loss_history.append(avg_train_loss)
-        val_loss_history.append(avg_val_loss)
-
-        # Metrics
-        val_acc = accuracy_score(all_labels, all_preds)
-        val_f1 = f1_score(all_labels, all_preds, zero_division=0)
-        
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | "
-              f"Train Loss: {train_loss/len(train_loader):.4f} | "
-              f"Val Loss: {val_loss/len(val_loader):.4f} | "
-              f"Val Acc: {val_acc:.4f} | Val F1: {val_f1:.4f}")
-
-        scheduler.step()
-
-    return model
-
-# EVALUATE MODEL FUNCTION
+# MODEL EVALUATION FUNCTION
 
 def evaluate_model(
     model: nn.Module, 
@@ -223,6 +144,10 @@ def evaluate_model(
     Returns:
         Tuple of (average_loss, accuracy, f1_score)
     """
+    # Check if loader is empty
+    if len(loader) == 0:
+        raise ValueError("DataLoader is empty")
+
     model.eval()
     total_loss = 0.0
     all_preds = []
@@ -236,15 +161,60 @@ def evaluate_model(
             total_loss += loss.item()
             
             preds = (torch.sigmoid(logits) > 0.5).float()
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(y_batch.cpu().numpy())
+            all_preds.append(preds.cpu())
+            all_labels.append(y_batch.cpu())
     
     avg_loss = total_loss / len(loader)
+    all_preds = torch.cat(all_preds, dim=0).numpy().flatten()
+    all_labels = torch.cat(all_labels, dim=0).numpy().flatten()
     acc = accuracy_score(all_labels, all_preds)
     f1 = f1_score(all_labels, all_preds, zero_division=0)
     
     return avg_loss, acc, f1
 
+def train_kan_model(model, train_loader, val_loader, epochs, lr, device, pos_weight):
+    if len(train_loader) == 0:
+        raise ValueError("No data in train loader")
+    if len(val_loader) == 0:
+        raise ValueError("No data in val loader")
+    
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.8)
+
+    history = {'train_loss': [], 'val_loss': [], 'val_acc': [], 'val_f1': []}
+
+    for epoch in range(epochs):
+        model.train()
+        epoch_train_loss = 0
+        
+        for X_batch, y_batch in train_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            optimizer.zero_grad()
+            logits = model(X_batch)
+            loss = criterion(logits, y_batch)
+            
+            reg_loss = model.kan.regularization_loss(L1_LAMBDA, ENTROPY_LAMBDA)
+            total_loss = loss + reg_loss
+            
+            total_loss.backward()
+            optimizer.step()
+            epoch_train_loss += total_loss.item()
+        
+        avg_train_loss = epoch_train_loss / len(train_loader)
+        val_loss, val_acc, val_f1 = evaluate_model(model, val_loader, criterion, device)
+        
+        history['train_loss'].append(avg_train_loss)
+        history['val_loss'].append(val_loss)
+        history['val_acc'].append(val_acc)
+        history['val_f1'].append(val_f1)
+        
+        print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | "
+              f"Val Loss: {val_loss:.4f} | Val F1: {val_f1:.4f}")
+        
+        scheduler.step()
+        
+    return history
 
 if __name__ == "__main__":
     print("SUBJECT-LEVEL CROSS-VALIDATION")
@@ -255,51 +225,58 @@ if __name__ == "__main__":
     
     subject_ids = list(data_by_subject.keys())
     print(f"   Found {len(subject_ids)} subjects: {subject_ids}")
-    
-    if len(subject_ids) < 5:
-        raise ValueError(f"Need at least 5 subjects, but found only {len(subject_ids)}")
-    
-    # Split subjects: 3 train, 1 val, 1 test
-    print("\n Splitting subjects (3 train, 1 val, 1 test)...")
-    train_subj, val_subj, test_subj = create_patient_split(subject_ids, n_train=3, n_val=1, n_test=1)
-    
+
+    # Split subjects into train, validation, and test sets
+    train_subj, val_subj, test_subj = create_patient_split(subject_ids)
+
     print(f"   Train subjects: {train_subj}")
     print(f"   Val subjects:   {val_subj}")
     print(f"   Test subjects:  {test_subj}")
     
     # Create datasets
-    print("\ Creating datasets...")
+    print("\n Creating datasets...")
     train_dataset = create_dataset_from_subjects(train_subj, data_by_subject)
     val_dataset = create_dataset_from_subjects(val_subj, data_by_subject)
     test_dataset = create_dataset_from_subjects(test_subj, data_by_subject)
     
-    print(f"   Train: {len(train_dataset)} samples")
-    print(f"   Val:   {len(val_dataset)} samples")
-    print(f"   Test:  {len(test_dataset)} samples")
-    
     # Create dataloaders
-    print("\n4. Creating dataloaders...")
+    print("\n Creating dataloaders...")
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    
-    # Get input dimension from first batch
+
+    # Set up model and weights
+    print("\n Setting up model and weights...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sample_X, sample_Y = train_dataset[0]
     input_dim = sample_X.shape[0]
-    print(f"   Input dimension: {input_dim}")
+    
     
     # Calculate class imbalance from training data
-    all_train_labels = torch.cat([train_dataset[i][1] for i in range(len(train_dataset))])
-    num_pos = int(all_train_labels.sum().item())
-    num_neg = int(all_train_labels.size(0) - num_pos)
-    pos_weight = torch.tensor(num_neg / max(num_pos, 1), dtype=torch.float32)
-    
-    
+    num_pos = 0
+    total_samples = len(train_dataset)
+
+    for i in range(total_samples):
+        label = train_dataset[i][1].item()
+        if label > 0:
+            num_pos += 1
+
+    num_neg = total_samples - num_pos
+
+    # Validate
+    if num_pos == 0:
+        raise ValueError("No positive samples in training data")
+    if num_neg == 0:
+        raise ValueError("No negative samples in training data")
+
+    pos_weight = torch.tensor(num_neg / num_pos, dtype=torch.float32)
+    if pos_weight > 10.0:
+        print(f"   WARNING: Very high pos_weight ({pos_weight:.2f}). Capping at 10.0")
+    pos_weight = torch.clamp(pos_weight, max=10.0)  
+        
     print(f" Dataset imbalance: {num_pos} positive, {num_neg} negative")
     print(f" Pos_weight: {pos_weight:.2f}")
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"\n Using device: {device}")
 
     # Initialize Model
     print("\n Initializing model...")
@@ -307,89 +284,51 @@ if __name__ == "__main__":
     model.to(device)
     print(f"   Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.8)
-
-    # History lists
-    print(f"\n. Starting training for {NUM_EPOCHS} epochs...")
-    train_loss_history = []
-    val_loss_history = []
-    val_acc_history = []
-    val_f1_history = []
-
-    for epoch in range(NUM_EPOCHS):
-        model.train()
-        epoch_train_loss = 0
-        
-        for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-            optimizer.zero_grad()
-            logits = model(X_batch)
-            loss = criterion(logits, y_batch)
-            
-            # Add KAN regularization
-            reg_loss = model.kan.regularization_loss(1e-5, 1e-5)
-            total_loss = loss + reg_loss
-            total_loss.backward()
-            optimizer.step()
-            epoch_train_loss += total_loss.item()
-        
-        # Validation
-        val_loss, val_acc, val_f1 = evaluate_model(model, val_loader, criterion, device)
-        
-        # Calculate train loss
-        train_loss = epoch_train_loss / len(train_loader)
-        
-        # Store history
-        train_loss_history.append(train_loss)
-        val_loss_history.append(val_loss)
-        val_acc_history.append(val_acc)
-        val_f1_history.append(val_f1)
-        
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Val Loss: {val_loss:.4f} | "
-            f"Val Acc: {val_acc:.4f} | "
-            f"Val F1: {val_f1:.4f}")
-    
-        scheduler.step()
+    # Run training
+    history = train_kan_model(model, train_loader, val_loader, epochs=NUM_EPOCHS, lr=LEARNING_RATE, device=device, pos_weight=pos_weight)
 
     # Final test evaluation
-    print("Final Test Evaluation")
-    test_loss, test_acc, test_f1 = evaluate_model(model, test_loader, criterion, device)
+    test_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    test_loss, test_acc, test_f1 = evaluate_model(model, test_loader, test_criterion, device)
     print(f"\n   Test Loss: {test_loss:.4f}")
     print(f"   Test Accuracy: {test_acc:.4f}")
     print(f"   Test F1: {test_f1:.4f}")
 
-    # Save model  
+
+
+    # Save model and results
+    print("\n Saving model...")
     torch.save({
         'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'epoch': NUM_EPOCHS,
-        'train_loss_history': train_loss_history,
-        'val_loss_history': val_loss_history,
-        'val_acc_history': val_acc_history,
-        'val_f1_history': val_f1_history,
-        'test_loss': test_loss,
-        'test_acc': test_acc,
-        'test_f1': test_f1,
-        'train_subjects': train_subj,
-        'val_subjects': val_subj,
-        'test_subjects': test_subj,
+        'history': history,
+        'test_metrics': {
+            'test_loss': test_loss,
+            'test_acc': test_acc,
+            'test_f1': test_f1
+        },
+        'subjects': {
+            'train': train_subj,
+            'val': val_subj,
+            'test': test_subj
+        },
+        'hyperparameters': {
+            'input_dim': input_dim,
+            'hidden_layers': [64, 32],
+            'grid_size': GRID_SIZE,
+            'dropout': DROPOUT
+        }
     }, 'kan_seizure_model.pth')
+
     print("   Model saved to 'kan_seizure_model.pth'")
-    print("TRAINING COMPLETE!")
-   
+
 
     # Plot Results
- 
     plt.figure(figsize=(12, 6))
 
     # Plot 1: Loss
     plt.subplot(1, 2, 1)
-    plt.plot(train_loss_history, label='Train Loss', color='blue')
-    plt.plot(val_loss_history, label='Val Loss', color='orange')
+    plt.plot(history['train_loss'], label='Train Loss', color='blue')
+    plt.plot(history['val_loss'], label='Val Loss', color='orange')
     plt.title('KAN Loss over Epochs')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
@@ -398,8 +337,8 @@ if __name__ == "__main__":
 
     # Plot 2: Metrics
     plt.subplot(1, 2, 2)
-    plt.plot(val_acc_history, label='Val Accuracy', color='green')
-    plt.plot(val_f1_history, label='Val F1', color='red')
+    plt.plot(history['val_acc'], label='Val Accuracy', color='green')
+    plt.plot(history['val_f1'], label='Val F1', color='red')
     plt.title('KAN Validation Metrics')
     plt.xlabel('Epoch')
     plt.ylabel('Score')
