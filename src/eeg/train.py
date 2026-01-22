@@ -4,130 +4,378 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, ConcatDataset
 from pathlib import Path
 from typing import Tuple, List, Dict, Optional
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, f1_score
-from torch.utils.data import Dataset, DataLoader
-from eeg.models import KANSeizureDetector
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 
+# # Data Loading Functions
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent.parent.parent
+src_path = project_root / 'src'
+DATA_PATH = project_root / 'data' / 'preprocessed'
+
+# # Add paths to sys.path
+# if str(project_root) not in sys.path:
+#     sys.path.append(str(project_root))
+# if str(src_path) not in sys.path:
+#     sys.path.append(str(src_path))
+# # Import model from the correct path
+# try:
+#     from src.eeg.models import KANSeizureDetector
+#     print(" Success! Imported via 'src.eeg.models'")
+# except ImportError:
+#     try:
+#         from eeg.models import KANSeizureDetector
+#         print(" Success! Imported via 'eeg.models'")
+#     except ImportError as e:
+#         print(f" Failed to import model. Error: {e}")
+#         sys.exit(1) 
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import math
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# KAN LINEAR MODEL
+
+class KANLinear(torch.nn.Module):
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        grid_size=5,
+        spline_order=3,
+        scale_noise=0.1,
+        scale_base=1.0,
+        scale_spline=1.0,
+        enable_standalone_scale_spline=True,
+        base_activation=torch.nn.SiLU,
+        grid_eps=0.02,
+        grid_range=[-1, 1],
+    ):
+        super(KANLinear, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.grid_size = grid_size
+        self.spline_order = spline_order
+
+        # Creating the spline grid
+        h = (grid_range[1] - grid_range[0]) / grid_size # step size
+        grid = (
+            (
+                torch.arange(-spline_order, grid_size + spline_order + 1) * h
+                + grid_range[0]
+            )
+            .expand(in_features, -1) # expand to the number of features
+            .contiguous() # contiguous tensor
+        )
+        self.register_buffer("grid", grid) # save the grid in the model
+        
+        # Learnable parameters
+        self.base_weight = torch.nn.Parameter(torch.Tensor(out_features, in_features)) # base weight matrix
+        self.spline_weight = torch.nn.Parameter(
+            torch.Tensor(out_features, in_features, grid_size + spline_order) # spline weight matrix
+        )
+        if enable_standalone_scale_spline:
+            self.spline_scaler = torch.nn.Parameter(
+                torch.Tensor(out_features, in_features) # spline scaler
+            )
+
+        self.scale_noise = scale_noise
+        self.scale_base = scale_base
+        self.scale_spline = scale_spline
+        self.enable_standalone_scale_spline = enable_standalone_scale_spline
+        self.base_activation = base_activation()
+        self.grid_eps = grid_eps
+
+        self.reset_parameters() 
+
+    # Reset parameters
+
+    def reset_parameters(self):
+        # Initialize the base weight matrix
+        torch.nn.init.kaiming_uniform_(self.base_weight, a=math.sqrt(5) * self.scale_base)
+        with torch.no_grad():
+            # Initialize the spline weights with small random noise
+            noise = (
+                (
+                    torch.rand(self.grid_size + 1, self.in_features, self.out_features)
+                    - 1 / 2
+                ) # Small random values centered at 0
+                * self.scale_noise
+                / self.grid_size
+            ) # Convert noise to spline coefficients
+            self.spline_weight.data.copy_(
+                (self.scale_spline if not self.enable_standalone_scale_spline else 1.0)
+                * self.curve2coeff(
+                    self.grid.T[self.spline_order : -self.spline_order], # Use middle part of the grid to avoid boundary effects
+                    noise, # Small random values centered at 0
+                ) # Convert noise to spline coefficients
+            )
+            if self.enable_standalone_scale_spline:
+                torch.nn.init.kaiming_uniform_(self.spline_scaler, a=math.sqrt(5) * self.scale_spline) # Initialize the spline scaler
+
+    # B-splines function
+
+    def b_splines(self, x: torch.Tensor):
+        # Check if the input is valid
+        assert x.dim() == 2 and x.size(1) == self.in_features
+        grid: torch.Tensor = self.grid
+        x = x.unsqueeze(-1)
+        bases = ((x >= grid[:, :-1]) & (x < grid[:, 1:])).to(x.dtype)
+
+        # Recursive Construction of B-splines
+        for k in range(1, self.spline_order + 1):
+            bases = (
+                (x - grid[:, : -(k + 1)])
+                / (grid[:, k:-1] - grid[:, : -(k + 1)])
+                * bases[:, :, :-1]
+            ) + (
+                (grid[:, k + 1 :] - x)
+                / (grid[:, k + 1 :] - grid[:, 1:(-k)])
+                * bases[:, :, 1:]
+            )
+        return bases.contiguous()
+
+    # Converting Curves to Coefficients
+
+    def curve2coeff(self, x: torch.Tensor, y: torch.Tensor):
+        assert x.dim() == 2 and x.size(1) == self.in_features
+        assert y.size() == (x.size(0), self.in_features, self.out_features)
+
+        A = self.b_splines(x).transpose(0, 1)
+        B = y.transpose(0, 1)
+        solution = torch.linalg.lstsq(A, B).solution
+        result = solution.permute(2, 0, 1)
+        return result.contiguous()
+
+    @property
+    def scaled_spline_weight(self):
+        return self.spline_weight * (
+            self.spline_scaler.unsqueeze(-1)
+            if self.enable_standalone_scale_spline
+            else 1.0
+        )
+
+    # Forward pass
+
+    def forward(self, x: torch.Tensor):
+        assert x.dim() == 2 and x.size(1) == self.in_features
+        # Base Transformation           
+        base_output = F.linear(self.base_activation(x), self.base_weight)
+        # Spline Transformation
+        spline_output = F.linear(
+            self.b_splines(x).view(x.size(0), -1),
+            self.scaled_spline_weight.view(self.out_features, -1),
+        )
+        return base_output + spline_output
+
+    # Adaptive Grid Update
+
+    @torch.no_grad() # no gradient computation
+    def update_grid(self, x: torch.Tensor, margin=0.01):
+        assert x.dim() == 2 and x.size(1) == self.in_features
+        batch = x.size(0)
+
+        splines = self.b_splines(x) # Current basis functions
+        splines = splines.permute(1, 0, 2)
+        orig_coeff = self.scaled_spline_weight # Current spline coefficients
+        orig_coeff = orig_coeff.permute(1, 2, 0)
+        unreduced_spline_output = torch.bmm(splines, orig_coeff)
+        unreduced_spline_output = unreduced_spline_output.permute(1, 0, 2)
+        # compute the current spline outputs before updating the grid
+
+        # Sort the input values
+
+        x_sorted = torch.sort(x, dim=0)[0]
+        grid_adaptive = x_sorted[
+            torch.linspace(
+                0, batch - 1, self.grid_size + 1, dtype=torch.int64, device=x.device
+            )
+        ]
+
+        uniform_step = (x_sorted[-1] - x_sorted[0] + 2 * margin) / self.grid_size
+        grid_uniform = (
+            torch.arange(
+                self.grid_size + 1, dtype=torch.float32, device=x.device
+            ).unsqueeze(1)
+            * uniform_step
+            + x_sorted[0]
+            - margin
+        )
+
+        grid = self.grid_eps * grid_uniform + (1 - self.grid_eps) * grid_adaptive
+        grid = torch.concatenate(
+            [
+                grid[:1]
+                - uniform_step
+                * torch.arange(self.spline_order, 0, -1, device=x.device).unsqueeze(1),
+                grid,
+                grid[-1:]
+                + uniform_step
+                * torch.arange(1, self.spline_order + 1, device=x.device).unsqueeze(1),
+            ],
+            dim=0,
+        )
+
+        self.grid.copy_(grid.T)
+        self.spline_weight.data.copy_(self.curve2coeff(x, unreduced_spline_output))
+
+        # Regularization Loss
+
+    def regularization_loss(self, regularize_activation=1.0, regularize_entropy=1.0):
+        l1_fake = self.spline_weight.abs().mean(-1) # L1 regularization on the spline weights
+        regularization_loss_activation = l1_fake.sum()
+        p = l1_fake / regularization_loss_activation # Probability distribution
+        regularization_loss_entropy = -torch.sum(p * p.log()) # Entropy regularization
+        return (
+            regularize_activation * regularization_loss_activation
+            + regularize_entropy * regularization_loss_entropy
+        ) # Regularization loss
+
+        # KAN Multi-Layer network
+
+class KAN(torch.nn.Module):
+    def __init__(
+        self,
+        layers_hidden,
+        grid_size=5,
+        spline_order=3,
+        scale_noise=0.1,
+        scale_base=1.0,
+        scale_spline=1.0,
+        base_activation=torch.nn.SiLU,
+        grid_eps=0.02,
+        grid_range=[-1, 1],
+    ):
+        super(KAN, self).__init__()
+        self.layers = torch.nn.ModuleList()
+        for in_features, out_features in zip(layers_hidden, layers_hidden[1:]):
+            self.layers.append(
+                KANLinear(
+                    in_features,
+                    out_features,
+                    grid_size=grid_size,
+                    spline_order=spline_order,
+                    scale_noise=scale_noise,
+                    scale_base=scale_base,
+                    scale_spline=scale_spline,
+                    base_activation=base_activation,
+                    grid_eps=grid_eps,
+                    grid_range=grid_range,
+                )
+            )
+
+    # Forward pass
+
+    def forward(self, x: torch.Tensor, update_grid=False):
+        # Forward pass through each layer
+        for layer in self.layers:
+            if update_grid:
+                layer.update_grid(x) # Update the grid if needed
+            x = layer(x) # Forward pass through the layer
+        return x # Return the output
+
+    # Aggregated Regularization Loss
+    def regularization_loss(self, regularize_activation=1.0, regularize_entropy=1.0):
+        return sum(
+            layer.regularization_loss(regularize_activation, regularize_entropy)
+            for layer in self.layers
+        )
+
+# KAN Seizure Detector Wrapper
+
+class KANSeizureDetector(torch.nn.Module):
+    def __init__(self, input_dim, hidden_layers=[64, 32], grid_size=5, dropout=0.2):
+        super().__init__()
+        # Input layer -> Hidden Layers -> 1 Output (Binary Classification)
+        self.architecture = [input_dim] + hidden_layers + [1]
+        # Dropout layer
+        self.dropout = torch.nn.Dropout(dropout)
+        # KAN layers
+        self.kan = KAN(
+            layers_hidden=self.architecture,
+            grid_size=grid_size,
+            spline_order=3,
+            scale_noise=0.1,
+            scale_base=1.0,
+            scale_spline=1.0,
+            base_activation=torch.nn.SiLU,
+            grid_eps=0.02,
+            grid_range=[-1, 1],
+        )
+
+    def forward(self, x, update_grid=False):
+        # Flatten input
+        if x.dim() > 2:
+            x = x.view(x.size(0), -1)
+        
+        # Apply dropout before KAN layers to prevent overfitting
+        x = self.dropout(x)
+        logits = self.kan(x, update_grid=update_grid)
+        return logits
+
+
+# NPZ Dataset Class
 class NPZDataset(Dataset):
     """
     Lazy-loading Dataset for preprocessed NPZ files.
-    
-    This class loads data samples on-demand rather than loading the entire
-    file into memory at once, making it memory-efficient for large datasets.
+    Optimized to keep RAM usage low for CPU training.
     """
     def __init__(self, npz_path: Path, window_size_key: str = '2s'):
         self.npz_path = npz_path
         self.window_size_key = window_size_key
-        
-        # Load only metadata, not the actual data
+    
+        # FIX: Use np.load with mmap_mode, not np.memmap directly
         try:
-            with np.load(npz_path, allow_pickle=True) as npz_file:
-                available_keys = list(npz_file.keys())
-                
-                # Check which key contains the data
-                if window_size_key in npz_file:
-                    self.data_key = window_size_key
-                    self.n_samples = len(npz_file[window_size_key])
-                elif 'data' in npz_file:
-                    self.data_key = 'data'
-                    self.n_samples = len(npz_file['data'])
-                else:
-                    raise KeyError(
-                        f"Data key not found in {npz_path.name}.\n"
-                        f"  Looking for: '{window_size_key}' or 'data'\n"
-                        f"  Available keys: {available_keys}"
-                    )
-                
-                # Verify labels exist
-                if 'labels' not in npz_file:
-                    raise KeyError(
-                        f"'labels' not found in {npz_path.name}.\n"
-                        f"  Available keys: {available_keys}"
-                    )
-                    
-                # Store data shape for verification
-                self.data_shape = npz_file[self.data_key].shape
-                
+            self.mmap_file = np.load(npz_path, mmap_mode='r')
         except Exception as e:
-            raise RuntimeError(f"Error initializing NPZDataset for {npz_path.name}: {e}")
-   
+            raise IOError(f"Failed to load {npz_path}: {e}")
+
+        # FIX: Logic to resolve the correct key name
+        if window_size_key in self.mmap_file:
+            self.data_key = window_size_key
+        elif 'data' in self.mmap_file:
+            self.data_key = 'data'
+        else:
+            # Debug info: print available keys if lookup fails
+            available_keys = list(self.mmap_file.keys())
+            raise KeyError(f"Data key '{window_size_key}' not found in {npz_path.name}. Available keys: {available_keys}")
+        
+        if 'labels' not in self.mmap_file:
+            raise KeyError(f"'labels' not found in {npz_path.name}")
+        
+        self.n_samples = len(self.mmap_file[self.data_key])
+
     def __len__(self):
         return self.n_samples
 
     def __getitem__(self, idx):
-        if idx < 0 or idx >= self.n_samples:
-            raise IndexError(f"Index {idx} out of range [0, {self.n_samples})")
+        # Access data using the resolved key
+        data_sample = self.mmap_file[self.data_key][idx]
+        label_sample = self.mmap_file['labels'][idx]
         
-        # Load data on demand (lazy loading)
-        try:
-            with np.load(self.npz_path, allow_pickle=True) as npz_file:
-                data = npz_file[self.data_key][idx]
-                label = npz_file['labels'][idx]
-        except Exception as e:
-            raise RuntimeError(
-                f"Error loading sample {idx} from {self.npz_path.name}: {e}"
-            )
-        
-        # Convert to tensor
-        data_tensor = torch.tensor(data, dtype=torch.float32)
-        label_tensor = torch.tensor(label, dtype=torch.float32)
-        
+        data_tensor = torch.tensor(data_sample, dtype=torch.float32)
+        label_tensor = torch.tensor(label_sample, dtype=torch.float32)
+            
         # Flatten if necessary (Time, Channels) -> (Features)
-        if data_tensor.dim() == 2:
-            data_tensor = data_tensor.flatten()
-        elif data_tensor.dim() > 2:
-            # Flatten all dimensions
+        if data_tensor.dim() >= 2:
             data_tensor = data_tensor.flatten()
         
         # Ensure label is 1D with single element
         if label_tensor.dim() == 0:
             label_tensor = label_tensor.unsqueeze(0)
         elif label_tensor.numel() > 1:
-            # If multi-element, take the first one (or handle as needed)
             label_tensor = label_tensor.flatten()[0:1]
         
+        # FIX: Return tuple (data, label), not the file object
         return data_tensor, label_tensor
-
-
-# Get current working directory
-current_dir = Path(os.getcwd()).resolve()
-
-if 'uvtez' in str(current_dir):
-    # Find the part of the path in 'uvtez'
-    while current_dir.name != 'uvtez' and current_dir.parent != current_dir:
-        current_dir = current_dir.parent
-    project_root = current_dir
-else:
-    project_root = Path(os.getcwd()).resolve()
-
-# Define paths
-src_path = project_root / 'src'
-DATA_PATH = project_root / 'data' / 'preprocessed'  
-
-# Add paths to sys.path
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-if str(src_path) not in sys.path:
-    sys.path.append(str(src_path))
-
-print(f" Project Root: {project_root}")
-print(f" Data Path:    {DATA_PATH}")
-
-# Import model after path setup
-try:
-    from src.eeg.models import KANSeizureDetector
-    print(" Success! Imported via 'src.eeg.models'")
-except ImportError:
-    try:
-        from eeg.models import KANSeizureDetector
-        print(" Success! Imported via 'eeg.models'")
-    except ImportError as e:
-        print(f" Failed to import model. Error: {e}")
-        sys.exit(1) 
 
 # HYPERPARAMETERS
 SEED = 42
@@ -140,58 +388,30 @@ DROPOUT = 0.2
 WINDOW_SIZE_KEY = '2s'
 L1_LAMBDA = 1e-5
 ENTROPY_LAMBDA = 1e-5
+NUM_WORKERS = 4 if os.cpu_count() > 4 else 0
 
 # SUBJECT-LEVEL CROSS-VALIDATION SPLIT
 N_TRAIN = 3 
-N_VAL = 1  
-N_TEST = 1  
+N_VAL = 1
+N_TEST = 1
 
 # Setting the seed
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
 # LOAD DATA FUNCTION - Returns file paths organized by subject
-def load_data(data_path: Path, window_size_key: str) -> Dict[str, List[Path]]:
+def load_data(data_path: Path) -> Dict[str, List[Path]]:
     """
     Load file paths from the preprocessed directory, organized by subject.
     Does NOT load actual data into memory - returns paths for lazy loading.
     """
     data_by_subject = {}
-    skipped_files = []
     
     for file_path in data_path.glob("**/*.npz"):
-        try:
-            # Extract subject ID from filename (e.g., chb01_01.npz -> chb01)
-            subject_id = file_path.stem.split('_')[0]
-            
-            # Verify the file contains required keys
-            with np.load(file_path) as data:
-                has_data = window_size_key in data or 'data' in data
-                has_labels = 'labels' in data
-                
-                if has_data and has_labels:
-                    if subject_id not in data_by_subject:
-                        data_by_subject[subject_id] = []
-                    data_by_subject[subject_id].append(file_path)
-                    print(f" ✓ Registered {file_path.name} for subject {subject_id}")
-                else:
-                    missing = []
-                    if not has_data:
-                        missing.append(f"'{window_size_key}' or 'data'")
-                    if not has_labels:
-                        missing.append("'labels'")
-                    skipped_files.append((file_path.name, ', '.join(missing)))
-                
-        except (OSError, KeyError) as e:
-            print(f" ✗ Error checking {file_path.name}: {e}")
-    
-    if skipped_files:
-        print(f"\n⚠ Skipped {len(skipped_files)} files:")
-        for fname, reason in skipped_files[:5]:  # Show first 5
-            print(f"  - {fname}: Missing {reason}")
-        if len(skipped_files) > 5:
-            print(f"  ... and {len(skipped_files) - 5} more")
-    
+        subject_id = file_path.stem.split('_')[0]
+        if subject_id not in data_by_subject:
+            data_by_subject[subject_id] = []
+        data_by_subject[subject_id].append(file_path)
     return data_by_subject
 
 # Create datasets from subject splits using lazy loading
@@ -212,11 +432,7 @@ def create_dataset_from_subjects(
     Returns:
         ConcatDataset of NPZDataset objects, or None if no subjects provided
     """
-    if not subjects:
-        return None
-    
-    if not data_dict:
-        raise ValueError("No data dictionary provided")
+    if not subjects: return None
 
     datasets = []
     total_samples = 0
@@ -228,9 +444,9 @@ def create_dataset_from_subjects(
                     dataset = NPZDataset(file_path, window_size_key)
                     datasets.append(dataset)
                     total_samples += len(dataset)
-                    print(f"   Added {file_path.name}: {len(dataset)} samples")
+                    print(f" Added {file_path.name}: {len(dataset)} samples")
                 except Exception as e:
-                    print(f"   ✗ Error loading {file_path.name}: {e}")
+                    print(f" Error loading {file_path.name}: {e}")
     
     if not datasets:
         raise ValueError(f"No valid data found for subjects: {subjects}")
@@ -242,9 +458,7 @@ def create_dataset_from_subjects(
 
 def create_patient_split(
     subject_ids: List[str], 
-    n_train: int = N_TRAIN, 
-    n_val: int = N_VAL, 
-    n_test: int = N_TEST
+    total_needed: int = N_TRAIN + N_VAL + N_TEST
 ) -> Tuple[List[str], List[str], List[str]]:
     """    
     Split subjects into train, validation, and test sets.
@@ -261,32 +475,23 @@ def create_patient_split(
     Raises:
         ValueError: If not enough subjects available for requested split
     """
-    total_needed = n_train + n_val + n_test  
-    n_subjects = len(subject_ids)
 
-    if n_subjects < total_needed:
+    if len(subject_ids) < total_needed:
         raise ValueError(
             f"Not enough subjects for requested split!\n"
-            f"  Available: {n_subjects} subjects\n"
-            f"  Requested: {n_train} train + {n_val} val + {n_test} test = {total_needed}\n"
-            f"  Please reduce N_TRAIN, N_VAL, or N_TEST in the script."
         )
     
-    if n_train < 1:
-        raise ValueError("N_TRAIN must be at least 1")
-
     shuffled = subject_ids.copy()
-    np.random.shuffle(shuffled)
+    np.random.shuffle(shuffled) 
     
     # Split subjects into train, validation, and test sets
-    train_end = n_train
-    val_end = train_end + n_val
-    test_end = val_end + n_test
+    train_end = N_TRAIN 
+    val_end = train_end + N_VAL
+    test_end = val_end + N_TEST
 
-    train_subj = shuffled[:train_end]
-    val_subj = shuffled[train_end:val_end] if n_val > 0 else []
-    test_subj = shuffled[val_end:test_end] if n_test > 0 else []
-    
+    train_subj = shuffled[:train_end] 
+    val_subj = shuffled[train_end:val_end] if N_VAL > 0 else [] 
+    test_subj = shuffled[val_end:test_end] if N_TEST > 0 else [] 
     return train_subj, val_subj, test_subj
 
 # MODEL EVALUATION FUNCTION
@@ -297,6 +502,7 @@ def evaluate_model(
     criterion: nn.Module, 
     device: torch.device
 ) -> Tuple[float, float, float]:
+
     """
     Evaluate model on a dataset.
     
@@ -309,6 +515,7 @@ def evaluate_model(
     Returns:
         Tuple of (average_loss, accuracy, f1_score)
     """
+
     # Check if loader is empty
     if len(loader) == 0:
         raise ValueError("DataLoader is empty")
@@ -337,7 +544,7 @@ def evaluate_model(
     
     return avg_loss, acc, f1
 
-def train_kan_model(KANSeizureDetector, train_loader, val_loader, epochs, lr, device, pos_weight):
+def train_kan_model(model, train_loader, val_loader, epochs, lr, device, pos_weight):
     """
     Train the KAN model with optional validation.
     
@@ -404,104 +611,51 @@ if __name__ == "__main__":
     print("SUBJECT-LEVEL CROSS-VALIDATION")
 
     # Load data (file paths only, not actual data)
-    print("\n[1/6] Loading data file paths...")
-    data_by_subject = load_data(DATA_PATH, WINDOW_SIZE_KEY)
-    
-    if not data_by_subject:
-        raise ValueError(f"No valid data found in {DATA_PATH}")
-    
+    # data_by_subject = load_data(DATA_PATH)
+    data_by_subject = load_data(Path('data/preprocessed'))
     subject_ids = list(data_by_subject.keys())
-    total_files = sum(len(files) for files in data_by_subject.values())
-    print(f"\n✓ Found {len(subject_ids)} subjects with {total_files} files total")
-    print(f"  Subjects: {subject_ids}")
-
-    # Split subjects into train, validation, and test sets
-    print(f"\n[2/6] Splitting subjects (Train:{N_TRAIN}, Val:{N_VAL}, Test:{N_TEST})...")
     train_subj, val_subj, test_subj = create_patient_split(subject_ids)
 
-    print(f"  Train subjects: {train_subj}")
-    print(f"  Val subjects:   {val_subj if val_subj else 'None'}")
-    print(f"  Test subjects:  {test_subj if test_subj else 'None'}")
-    
-    # Create datasets (lazy loading)
-    print("\n[3/6] Creating datasets (lazy loading)...")
-    print("  Training set:")
+    # Create datasets from subjects
     train_dataset = create_dataset_from_subjects(train_subj, data_by_subject, WINDOW_SIZE_KEY)
-    
-    val_dataset = None
-    if val_subj:
-        print("  Validation set:")
-        val_dataset = create_dataset_from_subjects(val_subj, data_by_subject, WINDOW_SIZE_KEY)
-    else:
-        print("  Validation set: None (N_VAL=0)")
-    
-    test_dataset = None
-    if test_subj:
-        print("  Test set:")
-        test_dataset = create_dataset_from_subjects(test_subj, data_by_subject, WINDOW_SIZE_KEY)
-    else:
-        print("  Test set: None (N_TEST=0)")
-    
-    # Create dataloaders
-    print("\n[4/6] Creating dataloaders...")
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    print(f"  Train loader: {len(train_loader)} batches")
-    
-    val_loader = None
-    if val_dataset:
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-        print(f"  Val loader: {len(val_loader)} batches")
-    else:
-        print(f"  Val loader: None")
-    
-    test_loader = None
-    if test_dataset:
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-        print(f"  Test loader: {len(test_loader)} batches")
-    else:
-        print(f"  Test loader: None")
+    val_dataset = create_dataset_from_subjects(val_subj, data_by_subject, WINDOW_SIZE_KEY)
+    test_dataset = create_dataset_from_subjects(test_subj, data_by_subject, WINDOW_SIZE_KEY)
 
-    # Set up model and weights
-    print("\n Setting up model and weights...")
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, persistent_workers=(NUM_WORKERS > 0))
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, persistent_workers=(NUM_WORKERS > 0)) if val_dataset else None
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, persistent_workers=(NUM_WORKERS > 0)) if test_dataset else None
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    sample_X, sample_Y = train_dataset[0]
-    input_dim = sample_X.shape[0]
-    print(f"  Input dimension: {input_dim}")
+    print(f"  Using device: {device}")
     
     # Calculate class imbalance from training data
-    print("  Calculating class weights...")
-    num_pos = 0
-    total_samples = len(train_dataset)
+    print("\n Estimating class weights...")
     
-    # Sample a subset if dataset is very large
-    sample_size = min(10000, total_samples)
-    if sample_size < total_samples:
-        print(f"  Sampling {sample_size}/{total_samples} for class weight calculation...")
-        indices = np.random.choice(total_samples, sample_size, replace=False)
-    else:
-        indices = range(total_samples)
+    # Collect all labels
+    all_labels = []
+    for X_batch, y_batch in train_loader:
+        all_labels.append(y_batch.cpu().numpy())
+    all_labels = np.concatenate(all_labels, axis=0)
 
-    for i in indices:
-        label = train_dataset[i][1].item()
-        if label > 0:
-            num_pos += 1
+    num_pos = (all_labels == 1).sum()
+    num_neg = (all_labels == 0).sum()
 
-    num_neg = len(indices) - num_pos
-
-    # Validate
     if num_pos == 0:
-        raise ValueError("No positive samples in training data")
-    if num_neg == 0:
-        raise ValueError("No negative samples in training data")
+        print(" No positive samples found in subset. Using default pos_weight=1.0")
+        pos_weight = torch.tensor(1.0, dtype=torch.float32)
+    else:
+        pos_weight = torch.tensor(num_neg / num_pos, dtype=torch.float32)
+        if pos_weight > 10.0:
+            print(f"Very high pos_weight ({pos_weight:.2f}). Capping at 10.0")
+            pos_weight = torch.clamp(pos_weight, max=10.0)
 
-    pos_weight = torch.tensor(num_neg / num_pos, dtype=torch.float32)
-    if pos_weight > 10.0:
-        print(f"  WARNING: Very high pos_weight ({pos_weight:.2f}). Capping at 10.0")
-        pos_weight = torch.clamp(pos_weight, max=10.0)
-        
     print(f"  Class distribution: {num_pos} positive, {num_neg} negative")
     print(f"  Pos_weight: {pos_weight:.2f}")
     
+    sample_X, sample_Y = train_dataset[0]
+    input_dim = sample_X.shape[0]
+    print(f"  Input dimension: {input_dim}")
 
     # Initialize Model
     print("\n  Initializing KAN model...")
@@ -515,8 +669,7 @@ if __name__ == "__main__":
     print(f"  Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Run training
-    print(f"\n[6/6] Training model ({NUM_EPOCHS} epochs)...")
-    print("-" * 60)
+    print(f"\n Training model ({NUM_EPOCHS} epochs)...")
     history = train_kan_model(
         model, 
         train_loader, 
@@ -526,7 +679,6 @@ if __name__ == "__main__":
         device=device, 
         pos_weight=pos_weight
     )
-    print("-" * 60)
 
     # Final test evaluation
     if test_loader is not None and len(test_loader) > 0:
@@ -542,7 +694,7 @@ if __name__ == "__main__":
 
 
     # Save model and results
-    print("\n[Saving] Saving model and results...")
+    print("\n Saving model and results...")
     save_dict = {
         'model_state_dict': model.state_dict(),
         'history': history,
@@ -561,16 +713,15 @@ if __name__ == "__main__":
             'hidden_layers': [64, 32],
             'grid_size': GRID_SIZE,
             'dropout': DROPOUT,
-            'learning_rate': LEARNING_RATE,
-            'batch_size': BATCH_SIZE,
+            'learning_rate': LEARNING_RATE,            
             'epochs': NUM_EPOCHS,
             'window_size_key': WINDOW_SIZE_KEY
         }
     }
     
-    model_path = project_root / 'kan_seizure_model.pth'
+    model_path = Path('kan_seizure_model.pth')
     torch.save(save_dict, model_path)
-    print(f"  ✓ Model saved to '{model_path}'")
+    print(f" Model saved to '{model_path}'")
 
 
     # Plot Results
@@ -596,7 +747,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plot_path = project_root / 'kan_training_results.png'
+    plot_path = Path('kan_training_results.png')
     plt.savefig(plot_path, dpi=100, bbox_inches='tight')
     print(f"  ✓ Plot saved to '{plot_path}'")
     plt.close()

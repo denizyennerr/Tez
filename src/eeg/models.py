@@ -30,24 +30,26 @@ class KANLinear(torch.nn.Module):
         self.grid_size = grid_size
         self.spline_order = spline_order
 
-        h = (grid_range[1] - grid_range[0]) / grid_size
+        # Creating the spline grid
+        h = (grid_range[1] - grid_range[0]) / grid_size # step size
         grid = (
             (
                 torch.arange(-spline_order, grid_size + spline_order + 1) * h
                 + grid_range[0]
             )
-            .expand(in_features, -1)
-            .contiguous()
+            .expand(in_features, -1) # expand to the number of features
+            .contiguous() # contiguous tensor
         )
-        self.register_buffer("grid", grid)
-
-        self.base_weight = torch.nn.Parameter(torch.Tensor(out_features, in_features))
+        self.register_buffer("grid", grid) # save the grid in the model
+        
+        # Learnable parameters
+        self.base_weight = torch.nn.Parameter(torch.Tensor(out_features, in_features)) # base weight matrix
         self.spline_weight = torch.nn.Parameter(
-            torch.Tensor(out_features, in_features, grid_size + spline_order)
+            torch.Tensor(out_features, in_features, grid_size + spline_order) # spline weight matrix
         )
         if enable_standalone_scale_spline:
             self.spline_scaler = torch.nn.Parameter(
-                torch.Tensor(out_features, in_features)
+                torch.Tensor(out_features, in_features) # spline scaler
             )
 
         self.scale_noise = scale_noise
@@ -57,34 +59,43 @@ class KANLinear(torch.nn.Module):
         self.base_activation = base_activation()
         self.grid_eps = grid_eps
 
-        self.reset_parameters()
+        self.reset_parameters() 
+
+    # Reset parameters
 
     def reset_parameters(self):
+        # Initialize the base weight matrix
         torch.nn.init.kaiming_uniform_(self.base_weight, a=math.sqrt(5) * self.scale_base)
         with torch.no_grad():
+            # Initialize the spline weights with small random noise
             noise = (
                 (
                     torch.rand(self.grid_size + 1, self.in_features, self.out_features)
                     - 1 / 2
-                )
+                ) # Small random values centered at 0
                 * self.scale_noise
                 / self.grid_size
-            )
+            ) # Convert noise to spline coefficients
             self.spline_weight.data.copy_(
                 (self.scale_spline if not self.enable_standalone_scale_spline else 1.0)
                 * self.curve2coeff(
-                    self.grid.T[self.spline_order : -self.spline_order],
-                    noise,
-                )
+                    self.grid.T[self.spline_order : -self.spline_order], # Use middle part of the grid to avoid boundary effects
+                    noise, # Small random values centered at 0
+                ) # Convert noise to spline coefficients
             )
             if self.enable_standalone_scale_spline:
-                torch.nn.init.kaiming_uniform_(self.spline_scaler, a=math.sqrt(5) * self.scale_spline)
+                torch.nn.init.kaiming_uniform_(self.spline_scaler, a=math.sqrt(5) * self.scale_spline) # Initialize the spline scaler
+
+    # B-splines function
 
     def b_splines(self, x: torch.Tensor):
+        # Check if the input is valid
         assert x.dim() == 2 and x.size(1) == self.in_features
         grid: torch.Tensor = self.grid
         x = x.unsqueeze(-1)
         bases = ((x >= grid[:, :-1]) & (x < grid[:, 1:])).to(x.dtype)
+
+        # Recursive Construction of B-splines
         for k in range(1, self.spline_order + 1):
             bases = (
                 (x - grid[:, : -(k + 1)])
@@ -96,6 +107,8 @@ class KANLinear(torch.nn.Module):
                 * bases[:, :, 1:]
             )
         return bases.contiguous()
+
+    # Converting Curves to Coefficients
 
     def curve2coeff(self, x: torch.Tensor, y: torch.Tensor):
         assert x.dim() == 2 and x.size(1) == self.in_features
@@ -115,26 +128,35 @@ class KANLinear(torch.nn.Module):
             else 1.0
         )
 
+    # Forward pass
+
     def forward(self, x: torch.Tensor):
         assert x.dim() == 2 and x.size(1) == self.in_features
+        # Base Transformation           
         base_output = F.linear(self.base_activation(x), self.base_weight)
+        # Spline Transformation
         spline_output = F.linear(
             self.b_splines(x).view(x.size(0), -1),
             self.scaled_spline_weight.view(self.out_features, -1),
         )
         return base_output + spline_output
 
-    @torch.no_grad()
+    # Adaptive Grid Update
+
+    @torch.no_grad() # no gradient computation
     def update_grid(self, x: torch.Tensor, margin=0.01):
         assert x.dim() == 2 and x.size(1) == self.in_features
         batch = x.size(0)
 
-        splines = self.b_splines(x)
+        splines = self.b_splines(x) # Current basis functions
         splines = splines.permute(1, 0, 2)
-        orig_coeff = self.scaled_spline_weight
+        orig_coeff = self.scaled_spline_weight # Current spline coefficients
         orig_coeff = orig_coeff.permute(1, 2, 0)
         unreduced_spline_output = torch.bmm(splines, orig_coeff)
         unreduced_spline_output = unreduced_spline_output.permute(1, 0, 2)
+        # compute the current spline outputs before updating the grid
+
+        # Sort the input values
 
         x_sorted = torch.sort(x, dim=0)[0]
         grid_adaptive = x_sorted[
@@ -170,17 +192,19 @@ class KANLinear(torch.nn.Module):
         self.grid.copy_(grid.T)
         self.spline_weight.data.copy_(self.curve2coeff(x, unreduced_spline_output))
 
+        # Regularization Loss
+
     def regularization_loss(self, regularize_activation=1.0, regularize_entropy=1.0):
-        l1_fake = self.spline_weight.abs().mean(-1)
+        l1_fake = self.spline_weight.abs().mean(-1) # L1 regularization on the spline weights
         regularization_loss_activation = l1_fake.sum()
-        p = l1_fake / regularization_loss_activation
-        regularization_loss_entropy = -torch.sum(p * p.log())
+        p = l1_fake / regularization_loss_activation # Probability distribution
+        regularization_loss_entropy = -torch.sum(p * p.log()) # Entropy regularization
         return (
             regularize_activation * regularization_loss_activation
             + regularize_entropy * regularization_loss_entropy
-        )
+        ) # Regularization loss
 
-# KAN MODEL
+        # KAN Multi-Layer network
 
 class KAN(torch.nn.Module):
     def __init__(
@@ -213,28 +237,33 @@ class KAN(torch.nn.Module):
                 )
             )
 
+    # Forward pass
+
     def forward(self, x: torch.Tensor, update_grid=False):
+        # Forward pass through each layer
         for layer in self.layers:
             if update_grid:
-                layer.update_grid(x)
-            x = layer(x)
-        return x
+                layer.update_grid(x) # Update the grid if needed
+            x = layer(x) # Forward pass through the layer
+        return x # Return the output
 
+    # Aggregated Regularization Loss
     def regularization_loss(self, regularize_activation=1.0, regularize_entropy=1.0):
         return sum(
             layer.regularization_loss(regularize_activation, regularize_entropy)
             for layer in self.layers
         )
 
-# SEIZURE DETECTION WRAPPER 
+# KAN Seizure Detector Wrapper
 
 class KANSeizureDetector(torch.nn.Module):
     def __init__(self, input_dim, hidden_layers=[64, 32], grid_size=5, dropout=0.2):
         super().__init__()
         # Input layer -> Hidden Layers -> 1 Output (Binary Classification)
         self.architecture = [input_dim] + hidden_layers + [1]
+        # Dropout layer
         self.dropout = torch.nn.Dropout(dropout)
-
+        # KAN layers
         self.kan = KAN(
             layers_hidden=self.architecture,
             grid_size=grid_size,
@@ -252,7 +281,7 @@ class KANSeizureDetector(torch.nn.Module):
         if x.dim() > 2:
             x = x.view(x.size(0), -1)
         
-        # Apply dropout before KAN layers
+        # Apply dropout before KAN layers to prevent overfitting
         x = self.dropout(x)
         logits = self.kan(x, update_grid=update_grid)
         return logits
