@@ -329,38 +329,67 @@ class NPZDataset(Dataset):
     Optimized to keep RAM usage low for CPU training.
     """
     def __init__(self, npz_path: Path, window_size_key: str = '2s'):
-        self.npz_path = npz_path
+        self.npz_path = str(npz_path)  # Store as string for pickle compatibility
         self.window_size_key = window_size_key
-    
-        # FIX: Use np.load with mmap_mode, not np.memmap directly
-        try:
-            self.mmap_file = np.load(npz_path, mmap_mode='r')
-        except Exception as e:
-            raise IOError(f"Failed to load {npz_path}: {e}")
 
-        # FIX: Logic to resolve the correct key name
-        if window_size_key in self.mmap_file:
-            self.data_key = window_size_key
-        elif 'data' in self.mmap_file:
-            self.data_key = 'data'
-        else:
-            # Debug info: print available keys if lookup fails
-            available_keys = list(self.mmap_file.keys())
-            raise KeyError(f"Data key '{window_size_key}' not found in {npz_path.name}. Available keys: {available_keys}")
-        
-        if 'labels' not in self.mmap_file:
-            raise KeyError(f"'labels' not found in {npz_path.name}")
-        
-        self.n_samples = len(self.mmap_file[self.data_key])
+        # Open file, read metadata, close immediately
+        try:
+            with np.load(self.npz_path, allow_pickle=True) as f:
+                if window_size_key in f:
+                    self.data_key = window_size_key
+                elif 'data' in f:
+                    self.data_key = 'data'
+                else:
+                    available_keys = list(f.keys())
+                    raise KeyError(
+                        f"Data key '{window_size_key}' not found in {npz_path}.\n"
+                        f"Available keys: {available_keys}"
+                    )
+                
+                if 'labels' not in f:
+                    available_keys = list(f.keys())
+                    raise KeyError(
+                        f"'labels' not found in {npz_path}.\n"
+                        f"Available keys: {available_keys}"
+                    )
+
+                # Store metadata only (not actual data)
+                self.n_samples = len(f[self.data_key])
+                self.data_shape = f[self.data_key].shape
+
+        except Exception as e:
+            raise IOError(f"Failed to initialize dataset from {npz_path}: {e}")
+
+        # File handle starts as None (will be opened lazily in worker)
+        self.data_source = None
 
     def __len__(self):
         return self.n_samples
 
     def __getitem__(self, idx):
-        # Access data using the resolved key
-        data_sample = self.mmap_file[self.data_key][idx]
-        label_sample = self.mmap_file['labels'][idx]
-        
+        """
+        Opens file lazily on first access in worker process.
+        Each worker process gets its own file handle.
+        """
+        # Bounds checking
+        if idx < 0 or idx >= self.n_samples:
+            raise IndexError(f"Index {idx} out of range [0, {self.n_samples})")
+
+        # Open file ONCE per worker (lazy loading)
+        if self.data_source is None:
+            self.data_source = np.load(self.npz_path, allow_pickle=True)
+
+        # ✅ CRITICAL: Load data OUTSIDE the if block
+        # This MUST execute every time __getitem__ is called
+        try:
+            data_sample = self.data_source[self.data_key][idx]
+            label_sample = self.data_source['labels'][idx]
+        except Exception as e:
+            raise RuntimeError(
+                f"Error loading sample {idx} from {self.npz_path}: {e}"
+            )
+
+        # Convert to tensors
         data_tensor = torch.tensor(data_sample, dtype=torch.float32)
         label_tensor = torch.tensor(label_sample, dtype=torch.float32)
             
@@ -374,8 +403,12 @@ class NPZDataset(Dataset):
         elif label_tensor.numel() > 1:
             label_tensor = label_tensor.flatten()[0:1]
         
-        # FIX: Return tuple (data, label), not the file object
         return data_tensor, label_tensor
+    def __del__(self):
+        if self.data_source is not None:
+            if hasattr(self.data_source, 'close'):
+                self.data_source.close()
+            self.data_source = None
 
 # HYPERPARAMETERS
 SEED = 42
@@ -388,7 +421,7 @@ DROPOUT = 0.2
 WINDOW_SIZE_KEY = '2s'
 L1_LAMBDA = 1e-5
 ENTROPY_LAMBDA = 1e-5
-NUM_WORKERS = 4 if os.cpu_count() > 4 else 0
+NUM_WORKERS = 0
 
 # SUBJECT-LEVEL CROSS-VALIDATION SPLIT
 N_TRAIN = 3 
@@ -457,34 +490,22 @@ def create_dataset_from_subjects(
 # SUBJECT-LEVEL CROSS-VALIDATION
 
 def create_patient_split(
-    subject_ids: List[str], 
-    total_needed: int = N_TRAIN + N_VAL + N_TEST
+    subject_ids: List[str]
 ) -> Tuple[List[str], List[str], List[str]]:
-    """    
-    Split subjects into train, validation, and test sets.
+    """Split subjects into train/val/test sets."""
+    total_needed = N_TRAIN + N_VAL + N_TEST
     
-    Args:
-        subject_ids: List of subject IDs to split
-        n_train: Number of subjects for training
-        n_val: Number of subjects for validation (0 = no validation)
-        n_test: Number of subjects for testing (0 = no test set)
-        
-    Returns:
-        Tuple of (train_subjects, val_subjects, test_subjects)
-        
-    Raises:
-        ValueError: If not enough subjects available for requested split
-    """
-
     if len(subject_ids) < total_needed:
         raise ValueError(
-            f"Not enough subjects for requested split!\n"
+            f"Not enough subjects for split!\n"
+            f"  Available: {len(subject_ids)}\n"
+            f"  Requested: {N_TRAIN} train + {N_VAL} val + {N_TEST} test = {total_needed}\n"
+            f"  Please reduce N_TRAIN, N_VAL, or N_TEST"
         )
     
     shuffled = subject_ids.copy()
     np.random.shuffle(shuffled) 
     
-    # Split subjects into train, validation, and test sets
     train_end = N_TRAIN 
     val_end = train_end + N_VAL
     test_end = val_end + N_TEST
@@ -492,6 +513,7 @@ def create_patient_split(
     train_subj = shuffled[:train_end] 
     val_subj = shuffled[train_end:val_end] if N_VAL > 0 else [] 
     test_subj = shuffled[val_end:test_end] if N_TEST > 0 else [] 
+    
     return train_subj, val_subj, test_subj
 
 # MODEL EVALUATION FUNCTION
@@ -608,12 +630,24 @@ def train_kan_model(model, train_loader, val_loader, epochs, lr, device, pos_wei
     return history
 
 if __name__ == "__main__":
-    print("SUBJECT-LEVEL CROSS-VALIDATION")
+    print("KAN SEIZURE DETECTION TRAINING")
 
-    # Load data (file paths only, not actual data)
-    # data_by_subject = load_data(DATA_PATH)
-    data_by_subject = load_data(Path('data/preprocessed'))
+    # load_data(DATA_PATH)
+    data_path = Path('data/preprocessed')
+    if not data_path.exists():
+        data_path = Path('../../data/preprocessed') 
+    if not data_path.exists():
+        print(f"\n Error: Data path not found!")
+        print(f" Tried: data/preprocessed")
+        print(f" Tried: ../../data/preprocessed")
+        print(f" Please set the correct path to your preprocessed data.")
+        sys.exit(1)
+
+    # Load file paths
+    data_by_subject = load_data(data_path)
     subject_ids = list(data_by_subject.keys())
+
+    # Split subjects into train, validation, and test sets
     train_subj, val_subj, test_subj = create_patient_split(subject_ids)
 
     # Create datasets from subjects
@@ -632,23 +666,36 @@ if __name__ == "__main__":
     # Calculate class imbalance from training data
     print("\n Estimating class weights...")
     
-    # Collect all labels
-    all_labels = []
-    for X_batch, y_batch in train_loader:
-        all_labels.append(y_batch.cpu().numpy())
-    all_labels = np.concatenate(all_labels, axis=0)
+    num_pos = 0
+    num_neg = 0
 
-    num_pos = (all_labels == 1).sum()
-    num_neg = (all_labels == 0).sum()
+    if train_dataset:
+        for ds in train_dataset.datasets:
+            try:
+                with np.load(ds.npz_path, allow_pickle=True) as f:
+                    labels = f['labels']
+                    
+                    # Directly accumulate counts without checking for both classes
+                    # This handles files with only one class (common in CHB-MIT 1-hour files)
+                    num_pos += np.sum(labels > 0)
+                    num_neg += np.sum(labels == 0)
 
+            except Exception as e:
+                print(f"  Error loading {ds.npz_path}: {e}")
+
+    # Calculate pos_weight
     if num_pos == 0:
         print(" No positive samples found in subset. Using default pos_weight=1.0")
         pos_weight = torch.tensor(1.0, dtype=torch.float32)
     else:
-        pos_weight = torch.tensor(num_neg / num_pos, dtype=torch.float32)
-        if pos_weight > 10.0:
-            print(f"Very high pos_weight ({pos_weight:.2f}). Capping at 10.0")
-            pos_weight = torch.clamp(pos_weight, max=10.0)
+        raw_weight = num_neg / num_pos
+        # Cap at 50.0 to prevent instability while preserving class importance
+        max_weight = 50.0
+        if raw_weight > max_weight:
+            print(f"  High pos_weight ({raw_weight:.2f}). Capping at {max_weight}")
+            pos_weight = torch.tensor(max_weight, dtype=torch.float32)
+        else:
+            pos_weight = torch.tensor(raw_weight, dtype=torch.float32)
 
     print(f"  Class distribution: {num_pos} positive, {num_neg} negative")
     print(f"  Pos_weight: {pos_weight:.2f}")
