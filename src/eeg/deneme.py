@@ -1,8 +1,3 @@
-"""
-EEG Seizure Detection Training Script
-Uses KANSeizureDetector model with PyTorch DataLoader
-Optimized for 16GB RAM with batch_size 16
-"""
 import sys
 import gc
 import numpy as np
@@ -12,10 +7,11 @@ import torch.optim as optim
 from sklearn.model_selection import GroupKFold
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
+from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 # Import model
 try:
@@ -35,8 +31,6 @@ DATA_PATH = project_root / 'data' / 'preprocessed'
 class EEGDataset(Dataset):
     """
     Memory-efficient EEG dataset with file caching.
-    
-    Strategy for 16GB RAM:
     - Build index map once during init (file paths + sample indices)
     - Cache loaded file data to avoid repeated file I/O
     - Use LRU-style cache with max_cached_files limit
