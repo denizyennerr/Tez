@@ -361,13 +361,13 @@ if __name__ == '__main__':
                 improvement_flag = "✓ NEW BEST"
             else:
                 patience_counter += 1
-                improvement_flag = f"(no improvement: {patience_counter}/{PATIENCE})"
+                improvement_flag = f"(no improvement: {patience_counter}/{NUM_EPOCHS})"
             
             print(f"  Epoch {epoch+1:2d}/{NUM_EPOCHS} | "
                   f"Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f} | "
                   f"F1: {val_f1:.4f} | {improvement_flag}")
             
-            if patience_counter >= PATIENCE:
+            if patience_counter >= NUM_EPOCHS:
                 print(f"  Early stopping at epoch {epoch+1}")
                 break
             

@@ -1,9 +1,9 @@
 """
-EEG Seizure Detection - CPU OPTIMIZED
+EEG Seizure Detection - CPU OPTIMIZED (CORRECTED)
 Features:
-1. Subject-Level Cross-Validation (GroupKFold Fixed)
-2. RAM Efficiency: Contiguous Sampling (No cache thrashing)
-3. Speed: Limits training to 16 batches per epoch as requested
+1. Subject-Level Cross-Validation (GroupKFold)
+2. RAM Efficiency: Contiguous batch sampling + LRU cache
+3. Configurable batch limit for quick experiments
 """
 import sys
 import gc
@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import GroupKFold
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from tqdm import tqdm
 from collections import OrderedDict, defaultdict
@@ -22,7 +22,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
-# --- 1. Import Model ---
+# Import Model
 try:
     from eeg.models import KANSeizureDetector
 except ImportError:
@@ -31,41 +31,46 @@ except ImportError:
     sys.path.append(str(src_path))
     from eeg.models import KANSeizureDetector
 
-# --- 2. Configuration ---
+# Configuration
 current_file_path = Path(__file__).resolve()
 project_root = current_file_path.parent.parent.parent
 DATA_PATH = project_root / 'data' / 'preprocessed'
 
-# -----------------------------------------------------------------------------
-# 3. CRITICAL: IO-OPTIMIZED SAMPLER
-# -----------------------------------------------------------------------------
-class ContiguousBatchSampler(Sampler):
+
+# =============================================================================
+# CONTIGUOUS BATCH SAMPLER (Optimized for HDD/CPU)
+# =============================================================================
+class ContiguousBatchSampler:
     """
-    Yields batches from the same file consecutively.
+    Yields batches of indices file-by-file to minimize disk seeking.
     Essential for training on HDD/CPU to prevent cache thrashing.
     """
-    def __init__(self, dataset, batch_size, max_batches=None):
+    def __init__(self, dataset, batch_size, max_batches=None, shuffle=True):
         self.dataset = dataset
         self.batch_size = batch_size
         self.max_batches = max_batches
+        self.shuffle = shuffle
         
-        # Group indices by file
+        # Group indices by file path
         self.file_to_indices = defaultdict(list)
         for i, info in enumerate(dataset.index_map):
             self.file_to_indices[info['file_path']].append(i)
         self.file_paths = list(self.file_to_indices.keys())
 
     def __iter__(self):
-        # Shuffle the order of files (e.g., File C -> File A -> File B)
-        random.shuffle(self.file_paths)
+        # Shuffle file order
+        if self.shuffle:
+            random.shuffle(self.file_paths)
         
         batch = []
         batches_yielded = 0
         
-        for f_path in self.file_paths:
-            indices = self.file_to_indices[f_path]
-            # Shuffle indices WITHIN the file
-            random.shuffle(indices)
+        for file_path in self.file_paths:
+            indices = self.file_to_indices[file_path]
+            
+            # Shuffle indices within file
+            if self.shuffle:
+                random.shuffle(indices)
             
             for idx in indices:
                 batch.append(idx)
@@ -74,24 +79,29 @@ class ContiguousBatchSampler(Sampler):
                     batch = []
                     batches_yielded += 1
                     
-                    # STOP if we hit the debug limit
+                    # Stop if max_batches reached
                     if self.max_batches and batches_yielded >= self.max_batches:
                         return
-                        
-        # Yield remaining if any (and limit allows)
+        
+        # Yield remaining samples
         if batch and (not self.max_batches or batches_yielded < self.max_batches):
             yield batch
-
+    
     def __len__(self):
         if self.max_batches:
             return self.max_batches
         return len(self.dataset) // self.batch_size
 
-# -----------------------------------------------------------------------------
-# 4. DATASET
-# -----------------------------------------------------------------------------
+
+# =============================================================================
+# DATASET WITH LRU CACHE
+# =============================================================================
 class EEGDataset(Dataset):
+    """
+    Memory-efficient EEG dataset with LRU file caching.
+    """
     def __init__(self, file_list, window_key='2s', max_cached_files=20):
+        self.window_key = window_key
         self.max_cached_files = max_cached_files
         self.index_map = []
         self._cache = OrderedDict()
@@ -99,259 +109,384 @@ class EEGDataset(Dataset):
         print(f"    Indexing {len(file_list)} files...")
         for f_path in file_list:
             try:
-                # mmap_mode='r' lets us read headers without loading data to RAM
-                with np.load(f_path, mmap_mode='r') as f: 
+                with np.load(f_path, mmap_mode='r') as f:
                     key = window_key if window_key in f else 'data'
-                    if key not in f: continue
+                    if key not in f or 'labels' not in f:
+                        continue
                     
                     labels = f['labels']
-                    # Vectorized search for valid labels (0 or 1)
-                    valid = np.where((labels == 0) | (labels == 1))[0]
+                    # Vectorized search for valid labels
+                    valid_indices = np.where((labels == 0) | (labels == 1))[0]
                     
-                    for i in valid:
+                    for i in valid_indices:
                         self.index_map.append({
-                            'file_path': str(f_path), 
-                            'data_key': key, 
-                            'index': int(i), 
+                            'file_path': str(f_path),
+                            'data_key': key,
+                            'index': int(i),
                             'label': float(labels[i])
                         })
-            except Exception:
+            except Exception as e:
+                print(f"      Warning: Skipping {f_path.name}: {e}")
                 continue
-            
-    def __len__(self): return len(self.index_map)
+        
+        print(f"      Total samples: {len(self.index_map)}")
     
-    def _load_cache(self, path, key):
-        if path in self._cache:
-            self._cache.move_to_end(path)
+    def __len__(self):
+        return len(self.index_map)
+    
+    def _load_to_cache(self, file_path, data_key):
+        """Load file to cache with LRU eviction"""
+        if file_path in self._cache:
+            # Move to end (most recently used)
+            self._cache.move_to_end(file_path)
             return
         
-        # LRU Eviction
+        # Evict oldest if cache is full
         while len(self._cache) >= self.max_cached_files:
             self._cache.popitem(last=False)
-            
-        with np.load(path, allow_pickle=True) as f:
-            self._cache[path] = f[key][:].astype(np.float32)
-
+        
+        # Load file
+        with np.load(file_path, allow_pickle=True) as f:
+            self._cache[file_path] = f[data_key][:].astype(np.float32)
+    
     def __getitem__(self, idx):
+        if idx < 0 or idx >= len(self.index_map):
+            raise IndexError(f"Index {idx} out of range")
+        
         info = self.index_map[idx]
-        self._load_cache(info['file_path'], info['data_key'])
         
-        data = self._cache[info['file_path']][info['index']]
-        if data.ndim > 1: data = data.flatten()
+        try:
+            # Load to cache if needed
+            self._load_to_cache(info['file_path'], info['data_key'])
+            
+            # Get from cache
+            data = self._cache[info['file_path']][info['index']]
+        except Exception as e:
+            print(f"Error loading sample {idx}: {e}")
+            # Return zero tensor as fallback
+            return torch.zeros(1), torch.tensor([0.0])
         
-        # Norm
-        m, s = data.mean(), data.std()
-        if s > 1e-8: data = (data - m) / s
+        # Flatten if multidimensional
+        if data.ndim > 1:
+            data = data.flatten()
         
-        return torch.from_numpy(data), torch.tensor([info['label']], dtype=torch.float32)
+        # Ensure float32
+        if data.dtype != np.float32:
+            data = data.astype(np.float32)
+        
+        # Z-score normalization
+        mean, std = data.mean(), data.std()
+        if std > 1e-8:
+            data = (data - mean) / std
+        
+        return (
+            torch.from_numpy(data.copy()),
+            torch.tensor([info['label']], dtype=torch.float32)
+        )
     
     def clear_cache(self):
+        """Explicitly clear file cache"""
         self._cache.clear()
         gc.collect()
-
+    
     @staticmethod
     def get_patient_id(file_path: Path) -> str:
-        """Extract patient ID from filename (e.g., chb01_03.npz -> chb01)."""
-        return file_path.name.split('_')[0]
+        """Extract patient ID from filename"""
+        name = file_path.name
+        if 'chb' in name.lower():
+            return name.split('_')[0]
+        return name.split('_')[0] if '_' in name else name
 
-# -----------------------------------------------------------------------------
-# 5. MAIN EXECUTION
-# -----------------------------------------------------------------------------
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
 if __name__ == '__main__':
-    print("KAN SEIZURE DETECTION - CPU OPTIMIZED CV")
+    print("=" * 70)
+    print("KAN Seizure Detection - CPU Optimized CV")
+    print("=" * 70)
     
-    # --- CONFIG ---
+    # Hyperparameters
     BATCH_SIZE = 16
-    MAX_BATCHES_PER_EPOCH = 16  # Debug limit
     NUM_EPOCHS = 10
     LEARNING_RATE = 1e-4
+    WEIGHT_DECAY = 1e-4
     PATIENCE = 3
+    MAX_BATCHES_PER_EPOCH = 16  # Limit for quick experiments
+    MAX_CACHED_FILES = 20
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}")
+    print(f"\nDevice: {device}")
     
-    # Load Files
+    # Load files
+    print(f"\nData path: {DATA_PATH}")
     all_files = list(DATA_PATH.glob("**/*.npz"))
-    if not all_files:
-        sys.exit("ERROR: No NPZ files found!")
-
-    groups = [EEGDataset.get_patient_id(f) for f in all_files]
-    unique_p = list(set(g for g in groups if g))
-    print(f"Found {len(unique_p)} unique patients")
     
-    # Cross Validation
-    cv = GroupKFold(n_splits=min(5, len(unique_p)))
+    if not all_files:
+        print("ERROR: No NPZ files found!")
+        sys.exit(1)
+    
+    print(f"Found {len(all_files)} NPZ files")
+    
+    # Extract patient groups
+    groups = [EEGDataset.get_patient_id(f) for f in all_files]
+    unique_patients = list(set(g for g in groups if g is not None))
+    print(f"Found {len(unique_patients)} unique patients")
+    
+    if len(unique_patients) < 2:
+        print("ERROR: Need at least 2 patients for cross-validation")
+        sys.exit(1)
+    
+    # Cross-validation setup
+    n_splits = min(5, len(unique_patients))
+    cv = GroupKFold(n_splits=n_splits)
+    
+    print(f"\n{'='*70}")
+    print(f"RUNNING {n_splits}-FOLD CROSS-VALIDATION")
+    print(f"{'='*70}")
+    
     all_fold_results = []
-
-    # --- FIX: Iterate over split here to actually do Cross Validation ---
+    
+    # Cross-validation loop
     for fold_idx, (train_idx, val_idx) in enumerate(cv.split(all_files, groups=groups)):
-        print(f"\n{'='*40}\nFOLD {fold_idx + 1}/5\n{'='*40}")
+        print(f"\n{'='*70}")
+        print(f"FOLD {fold_idx + 1}/{n_splits}")
+        print(f"{'='*70}")
         
+        # Split files
         train_files = [all_files[i] for i in train_idx]
         val_files = [all_files[i] for i in val_idx]
         
-        # Verify Leakage
-        tr_p = set(EEGDataset.get_patient_id(f) for f in train_files)
-        va_p = set(EEGDataset.get_patient_id(f) for f in val_files)
-        if tr_p & va_p: print(f"WARNING: Leakage detected {tr_p & va_p}")
+        # Verify no patient leakage
+        train_patients = set(EEGDataset.get_patient_id(f) for f in train_files)
+        val_patients = set(EEGDataset.get_patient_id(f) for f in val_files)
+        overlap = train_patients & val_patients
         
-        # Datasets
-        train_ds = EEGDataset(train_files)
-        val_ds = EEGDataset(val_files)
+        if overlap:
+            print(f"  WARNING: Patient overlap detected: {overlap}")
+        else:
+            print(f"  ✓ No patient leakage")
         
-        # --- FIX: Use Contiguous Sampler for Training ---
-        # Note: We pass MAX_BATCHES_PER_EPOCH to the sampler to enforce the limit efficiently
-        train_sampler = ContiguousBatchSampler(train_ds, BATCH_SIZE, max_batches=MAX_BATCHES_PER_EPOCH)
+        print(f"  Train files: {len(train_files)}")
+        print(f"  Val files: {len(val_files)}")
         
-        # shuffle=False because sampler handles it
-        train_loader = DataLoader(train_ds, batch_sampler=train_sampler, num_workers=0)
-        val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-
-        # Calculate Class Weights (Approximate from indices)
-        labels = [i['label'] for i in train_ds.index_map]
-        neg, pos = labels.count(0.0), labels.count(1.0)
-        pos_weight = neg / max(pos, 1) * 2.0
-        print(f"  Class Balance: {neg} vs {pos} (Weight: {pos_weight:.2f})")
-
-        # --- FIX: Init Model INSIDE loop ---
-        x, _ = train_ds[0]
+        # Create datasets
+        print(f"\n  Creating datasets...")
+        train_dataset = EEGDataset(train_files, window_key='2s', max_cached_files=MAX_CACHED_FILES)
+        val_dataset = EEGDataset(val_files, window_key='2s', max_cached_files=MAX_CACHED_FILES)
+        
+        if len(train_dataset) == 0:
+            print(f"  ERROR: No training samples in fold {fold_idx + 1}!")
+            continue
+        
+        # Calculate class weights from index map (fast)
+        labels = [info['label'] for info in train_dataset.index_map]
+        num_neg = labels.count(0.0)
+        num_pos = labels.count(1.0)
+        pos_weight = (num_neg / max(num_pos, 1)) * 2.0  # 2x boost for minority class
+        
+        print(f"    Class distribution: {num_neg} non-seizure, {num_pos} seizure")
+        print(f"    Pos_weight: {pos_weight:.2f}")
+        
+        # Create samplers
+        train_sampler = ContiguousBatchSampler(
+            train_dataset, BATCH_SIZE, 
+            max_batches=MAX_BATCHES_PER_EPOCH, 
+            shuffle=True
+        )
+        val_sampler = ContiguousBatchSampler(
+            val_dataset, BATCH_SIZE,
+            max_batches=MAX_BATCHES_PER_EPOCH,
+            shuffle=False
+        )
+        
+        # Create dataloaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_sampler,
+            num_workers=0
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_sampler=val_sampler,
+            num_workers=0
+        )
+        
+        print(f"    Train batches: {len(train_sampler)} (limited to {MAX_BATCHES_PER_EPOCH})")
+        print(f"    Val batches: {len(val_sampler)} (limited to {MAX_BATCHES_PER_EPOCH})")
+        
+        # Initialize model for this fold
+        sample_x, sample_y = train_dataset[0]
+        input_dim = sample_x.shape[0]
+        
+        print(f"\n  Initializing model (input_dim={input_dim})...")
         model = KANSeizureDetector(
-            input_dim=x.shape[0], 
-            hidden_layers=[32, 16], 
+            input_dim=input_dim,
+            hidden_layers=[32, 16],
             grid_size=3,
             dropout=0.3
         ).to(device)
         
-        optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]).to(device))
+        print(f"    Parameters: {sum(p.numel() for p in model.parameters()):,}")
         
-        # Training
-        best_f1 = 0
+        # Loss and optimizer
+        criterion = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([pos_weight], dtype=torch.float32).to(device)
+        )
+        optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
+        
+        # Training loop
+        print(f"\n  {'='*68}")
+        print(f"  TRAINING FOLD {fold_idx + 1}")
+        print(f"  {'='*68}\n")
+        
+        fold_history = {
+            'train_loss': [],
+            'val_loss': [],
+            'val_f1': [],
+            'val_acc': [],
+            'val_precision': [],
+            'val_recall': []
+        }
+        
+        best_f1 = 0.0
         patience_counter = 0
-        fold_history = {'train_loss': [], 'val_f1': [], 'val_acc': [], 'val_loss': []}
-
-        for ep in range(NUM_EPOCHS):
+        
+        for epoch in range(NUM_EPOCHS):
+            # Training phase
             model.train()
-            losses = []
+            batch_losses = []
             
-            # Sampler handles the 'break' automatically
-            pbar = tqdm(train_loader, desc=f"Ep {ep+1}", leave=False)
-            for x, y in pbar:
+            pbar = tqdm(train_loader, desc=f"  Epoch {epoch+1}/{NUM_EPOCHS}", leave=False)
+            
+            for batch_idx, (x, y) in enumerate(pbar):
                 x, y = x.to(device), y.to(device)
-                optimizer.zero_grad()
-                out = model(x)
-                loss = criterion(out, y)
+                
+                optimizer.zero_grad(set_to_none=True)
+                output = model(x)
+                loss = criterion(output, y)
                 loss.backward()
                 optimizer.step()
-                losses.append(loss.item())
+                
+                batch_losses.append(loss.item())
+                
+                if batch_idx % 10 == 0:
+                    pbar.set_postfix({'loss': f'{np.mean(batch_losses[-10:]):.4f}'})
+                
+                # Memory cleanup
+                if batch_idx % 10 == 0:
+                    del x, y, output, loss
+                    gc.collect()
             
-            avg_trn_loss = np.mean(losses) if losses else 0
+            avg_train_loss = np.mean(batch_losses) if batch_losses else 0.0
+            fold_history['train_loss'].append(avg_train_loss)
             
-            # Validation
+            # Validation phase
             model.eval()
-            all_preds, all_targs = [], []
             val_batch_losses = []
+            all_preds = []
+            all_targets = []
             
             with torch.no_grad():
-                for i, (x, y) in enumerate(val_loader):
-                    if i >= MAX_BATCHES_PER_EPOCH:
-                        break
+                for x, y in val_loader:
+                    x, y = x.to(device), y.to(device)
                     
-                    x = x.to(device)
-                    y = y.to(device)  # Move labels to device for loss calculation
-                    
-                    out = model(x)
-                    loss = criterion(out, y)
+                    output = model(x)
+                    loss = criterion(output, y)
                     val_batch_losses.append(loss.item())
-
-                    preds = (torch.sigmoid(out) > 0.5).float()
+                    
+                    preds = (torch.sigmoid(output) > 0.5).float()
                     all_preds.extend(preds.cpu().numpy().flatten())
-                    all_targs.extend(y.cpu().numpy().flatten())
+                    all_targets.extend(y.cpu().numpy().flatten())
+                    
+                    del x, y, output, loss, preds
             
             avg_val_loss = np.mean(val_batch_losses) if val_batch_losses else 0.0
-            val_f1 = f1_score(all_targs, all_preds, zero_division=0)
-            val_acc = accuracy_score(all_targs, all_preds)
-
-            fold_history['train_loss'].append(avg_trn_loss)
+            val_acc = accuracy_score(all_targets, all_preds) if all_targets else 0.0
+            val_f1 = f1_score(all_targets, all_preds, zero_division=0) if all_targets else 0.0
+            val_precision = precision_score(all_targets, all_preds, zero_division=0) if all_targets else 0.0
+            val_recall = recall_score(all_targets, all_preds, zero_division=0) if all_targets else 0.0
+            
             fold_history['val_loss'].append(avg_val_loss)
-            fold_history['val_f1'].append(val_f1)
             fold_history['val_acc'].append(val_acc)
-
-            # Early Stopping
+            fold_history['val_f1'].append(val_f1)
+            fold_history['val_precision'].append(val_precision)
+            fold_history['val_recall'].append(val_recall)
+            
+            scheduler.step()
+            
+            # Early stopping
             if val_f1 > best_f1:
                 best_f1 = val_f1
                 patience_counter = 0
                 torch.save(model.state_dict(), project_root / f'best_model_fold{fold_idx+1}.pth')
-                msg = "Best F1"
+                improvement_flag = "✓ NEW BEST"
             else:
                 patience_counter += 1
-                msg = "No Improvement"
-                
-            print(f"  Ep {ep+1}: Loss {avg_trn_loss:.4f} | F1 {val_f1:.4f} | Acc {val_acc:.4f} {msg}")
+                improvement_flag = f"(no improvement: {patience_counter}/{PATIENCE})"
+            
+            print(f"  Epoch {epoch+1:2d}/{NUM_EPOCHS} | "
+                  f"Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f} | "
+                  f"F1: {val_f1:.4f} | Acc: {val_acc:.4f} | {improvement_flag}")
             
             if patience_counter >= PATIENCE:
-                print("  Early Stopping")
+                print(f"  Early stopping triggered")
                 break
             
             gc.collect()
-
-        # Store Results
+        
+        # Store fold results
         all_fold_results.append({
             'fold': fold_idx + 1,
             'best_f1': best_f1,
             'final_acc': fold_history['val_acc'][-1] if fold_history['val_acc'] else 0.0,
-            'history': fold_history.copy()  # Store history for plotting
+            'final_f1': fold_history['val_f1'][-1] if fold_history['val_f1'] else 0.0,
+            'final_precision': fold_history['val_precision'][-1] if fold_history['val_precision'] else 0.0,
+            'final_recall': fold_history['val_recall'][-1] if fold_history['val_recall'] else 0.0,
+            'history': fold_history.copy()
         })
         
-        # Cleanup
-        train_ds.clear_cache()
-        val_ds.clear_cache()
+        print(f"  FOLD {fold_idx + 1} COMPLETE - Best F1: {best_f1:.4f}")
+        
+        # Cleanup   
+        train_dataset.clear_cache()
+        val_dataset.clear_cache()
         del model, optimizer, train_loader
         gc.collect()
+            
+    
 
-    # Summary
-    print("\n" + "="*40)
-    print("RESULTS SUMMARY")
-    print("="*40)
-    f1s = [r['best_f1'] for r in all_fold_results]
-    print(f"Mean F1: {np.mean(f1s):.4f} ± {np.std(f1s):.4f}")
+        # Visualise results
+        f1_scores = [r['best_f1'] for r in all_fold_results]
+        acc_scores = [r['final_acc'] for r in all_fold_results]
+        precision_scores = [r['final_precision'] for r in all_fold_results]
+        recall_scores = [r['final_recall'] for r in all_fold_results]
 
-    # Visualise results (using last fold's history)
-    if all_fold_results:
-        last_fold = all_fold_results[-1]
-        history = last_fold.get('history', {})
+        fig = plt.figure(figsize=(16, 20))
         
         plt.figure(figsize=(12, 5))
-
-        # Plot Losses
         plt.subplot(1, 2, 1)
-        if history.get('train_loss'):
-            plt.plot(history['train_loss'], 'b-o', label='Train Loss', markersize=4)
-        if history.get('val_loss'):
-            plt.plot(history['val_loss'], 'r-o', label='Val Loss', markersize=4)
+        plt.plot(fold_history['train_loss'], color='blue', label='Train Loss', markersize=4)
+        plt.plot(fold_history['val_loss'], color='red', label='Val Loss', markersize=4)
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
-        plt.title(f'Fold {last_fold["fold"]} - Training & Validation Loss')
+        plt.title('KAN Training & Validation Loss')
         plt.legend()
         plt.grid(True, alpha=0.3)
-
-        # Plot Accuracies and F1
+        
         plt.subplot(1, 2, 2)
-        if history.get('val_acc'):
-            plt.plot(history['val_acc'], 'm-o', label='Val Acc', markersize=4)
-        if history.get('val_f1'):
-            plt.plot(history['val_f1'], 'orange', marker='o', linestyle='-', label='Val F1', markersize=4)
+        plt.plot(fold_history['val_acc'], color='green', label='Val Accuracy', markersize=4)
+        plt.plot(fold_history['val_f1'], color='magenta', label='Val F1', markersize=4)
         plt.xlabel('Epoch')
         plt.ylabel('Score')
-        plt.title(f'Fold {last_fold["fold"]} - Validation Metrics')
+        plt.title('KAN Validation Metrics')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        output_path = project_root / 'training_results3.png'
-        plt.savefig(output_path)
+        output_path = project_root / 'deneme3_training_results.png'
+        plt.savefig(output_path, dpi=150)
         plt.close()
         print(f"\nPlot saved to: {output_path}")
-    else:
-        print("\nNo results to plot.")
-
+      
