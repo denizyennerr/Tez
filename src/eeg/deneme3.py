@@ -37,9 +37,6 @@ project_root = current_file_path.parent.parent.parent
 DATA_PATH = project_root / 'data' / 'preprocessed'
 
 
-# =============================================================================
-# CONTIGUOUS BATCH SAMPLER (Optimized for HDD/CPU)
-# =============================================================================
 class ContiguousBatchSampler:
     """
     Yields batches of indices file-by-file to minimize disk seeking.
@@ -93,9 +90,7 @@ class ContiguousBatchSampler:
         return len(self.dataset) // self.batch_size
 
 
-# =============================================================================
-# DATASET WITH LRU CACHE
-# =============================================================================
+# Dataset with LRU cache
 class EEGDataset(Dataset):
     """
     Memory-efficient EEG dataset with LRU file caching.
@@ -198,9 +193,7 @@ class EEGDataset(Dataset):
         return name.split('_')[0] if '_' in name else name
 
 
-# =============================================================================
-# MAIN EXECUTION
-# =============================================================================
+# Main execution
 if __name__ == '__main__':
     print("=" * 70)
     print("KAN Seizure Detection - CPU Optimized CV")
@@ -415,26 +408,32 @@ if __name__ == '__main__':
             fold_history['val_recall'].append(val_recall)
             
             scheduler.step()
-            
-            # Early stopping
-            if val_f1 > best_f1:
-                best_f1 = val_f1
-                patience_counter = 0
-                torch.save(model.state_dict(), project_root / f'best_model_fold{fold_idx+1}.pth')
-                improvement_flag = "✓ NEW BEST"
-            else:
-                patience_counter += 1
-                improvement_flag = f"(no improvement: {patience_counter}/{PATIENCE})"
-            
+
+            # Print epoch results
             print(f"  Epoch {epoch+1:2d}/{NUM_EPOCHS} | "
                   f"Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f} | "
-                  f"F1: {val_f1:.4f} | Acc: {val_acc:.4f} | {improvement_flag}")
-            
-            if patience_counter >= PATIENCE:
-                print(f"  Early stopping triggered")
-                break
-            
+                  f"F1: {val_f1:.4f} | Acc: {val_acc:.4f}")
             gc.collect()
+            
+            # Early stopping
+            # if val_f1 > best_f1:
+            #     best_f1 = val_f1
+            #     patience_counter = 0
+            #     torch.save(model.state_dict(), project_root / f'best_model_fold{fold_idx+1}.pth')
+            #     improvement_flag = "✓ NEW BEST"
+            # else:
+            #     patience_counter += 1
+            #     improvement_flag = f"(no improvement: {patience_counter}/{PATIENCE})"
+            
+            # print(f"  Epoch {epoch+1:2d}/{NUM_EPOCHS} | "
+            #       f"Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f} | "
+            #       f"F1: {val_f1:.4f} | Acc: {val_acc:.4f} | {improvement_flag}")
+            
+            # if patience_counter >= PATIENCE:
+            #     print(f"  Early stopping triggered")
+            #     break
+            
+            # gc.collect()
         
         # Store fold results
         all_fold_results.append({
@@ -456,7 +455,6 @@ if __name__ == '__main__':
         gc.collect()
             
     
-
         # Visualise results
         f1_scores = [r['best_f1'] for r in all_fold_results]
         acc_scores = [r['final_acc'] for r in all_fold_results]
@@ -468,7 +466,7 @@ if __name__ == '__main__':
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
         plt.plot(fold_history['train_loss'], color='blue', label='Train Loss', markersize=4)
-        plt.plot(fold_history['val_loss'], color='red', label='Val Loss', markersize=4)
+        plt.plot(fold_history['val_loss'], color='cyan', label='Val Loss', markersize=4)
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.title('KAN Training & Validation Loss')
@@ -485,7 +483,7 @@ if __name__ == '__main__':
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        output_path = project_root / 'deneme3_training_results.png'
+        output_path = project_root / 'deneme3_training_results2.png'
         plt.savefig(output_path, dpi=150)
         plt.close()
         print(f"\nPlot saved to: {output_path}")
