@@ -8,28 +8,15 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_dir, "src"))
 
 # Now this import will work
-from eeg import create_multi_scale_windows, CHBMITPreprocessor
-
+from eeg.preprocessing import CHBMITPreprocessor
 
 def run_pipeline():
-    # 1. Define Paths
-    base_dir = Path("data/chb-mit")
-    output_dir = Path("data/preprocessed")
-    
-    if not base_dir.exists():
-        print(f" Error: Data directory not found at {base_dir.resolve()}")
-        return
-
-    print(f"Input Directory: {base_dir.resolve()}")
-    print(f"Output Directory: {output_dir.resolve()}\n")
-
-    # 2. Initialize Preprocessor
     subjects = ['chb01', 'chb03', 'chb05', 'chb09', 'chb10', 
                 'chb14', 'chb19', 'chb20', 'chb21', 'chb23']
     
     preprocessor = CHBMITPreprocessor(
-        base_dir=str(base_dir),
-        output_dir=str(output_dir),
+        base_dir=str("data/chb-mit"),
+        output_dir=str("data/preprocessed"),
         subject_subset=subjects
     )
 
@@ -49,7 +36,7 @@ def run_pipeline():
     # 4. Verify output for each subject
     print("--- Verification ---")
     for subject in subjects:
-        subject_out_dir = output_dir / subject
+        subject_out_dir = Path("data/preprocessed") / subject
         
         if not subject_out_dir.exists():
             print(f" {subject}: Output folder not found")

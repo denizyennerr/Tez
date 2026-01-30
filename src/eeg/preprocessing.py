@@ -5,19 +5,17 @@ import numpy as np
 import mne
 from mne.io import Raw
 import gc
-from eeg.windowing import create_multi_scale_windows
+# from eeg.windowing import extract_epochs_mne
 
 
 class CHBMITPreprocessor:
     """
     Deterministic preprocessing class for CHB-MIT Scalp EEG dataset.
-    
     Provides conservative, benchmark-comparable preprocessing with:
-    - Objective bad channel detection and removal
     - Fixed channel order alignment
     - Standard filtering pipeline
     - Multi-scale sliding window extraction
-    - Interictal data selection (>= 4 hours from seizures)
+    - Labeling based on seizure times
     """
     
     # Canonical channel order for CHB-MIT (standard bipolar montage)
@@ -44,7 +42,7 @@ class CHBMITPreprocessor:
     ]
     
     # Multi-scale window lengths (seconds)
-    WINDOW_LENGTHS = [1.0, 2.0, 5.0, 8.0, 10.0]
+    WINDOW_LENGTHS = [2.0]
     
     # Target sampling rate after downsampling
     TARGET_SFREQ = 128.0  # Hz
@@ -52,8 +50,8 @@ class CHBMITPreprocessor:
     # Source sampling rate (CHB-MIT standard)
     SOURCE_SFREQ = 256.0  # Hz
     
-    # Interictal threshold (4 hours in seconds)
-    INTERICTAL_THRESHOLD_SEC = 4 * 3600  # 14400 seconds
+    # # Interictal threshold (4 hours in seconds)
+    # INTERICTAL_THRESHOLD_SEC = 4 * 3600 
     
     def __init__(
         self,
@@ -63,10 +61,10 @@ class CHBMITPreprocessor:
         bad_channel_variance_threshold: float = 1e-10,
         bad_channel_flat_threshold: float = 1e-6,
         bad_channel_high_amp_threshold: float = 500e-6,  
-        interictal_threshold_sec: float = 4 * 3600,
+        # interictal_threshold_sec: float = 4 * 3600,
         use_stratified_sampling: bool = False,
         seizure_stride_sec: float = 1.0,
-        interictal_stride_sec: float = 10.0
+        # interictal_stride_sec: float = 10.0
     ):
         """
         Initialize CHB-MIT preprocessor.
@@ -83,9 +81,8 @@ class CHBMITPreprocessor:
             Minimum variance threshold for bad channel detection (default: 1e-10)
         bad_channel_flat_threshold : float
             Maximum peak-to-peak threshold for flat channel detection (default: 1e-6)
-        interictal_threshold_sec : float
-            Minimum time away from seizures to be considered interictal (default: 4 hours)
         """
+
         self.base_dir = Path(base_dir)
         self.output_dir = Path(output_dir)
         self.subject_subset = subject_subset if subject_subset else self.DEFAULT_SUBSET
@@ -95,10 +92,10 @@ class CHBMITPreprocessor:
         self.bad_channel_flat_threshold = bad_channel_flat_threshold
         self.bad_channel_high_amp_threshold = bad_channel_high_amp_threshold
         
-        self.interictal_threshold_sec = interictal_threshold_sec
+        # self.interictal_threshold_sec = interictal_threshold_sec
         self.use_stratified_sampling = use_stratified_sampling
         self.seizure_stride_sec = seizure_stride_sec
-        self.interictal_stride_sec = interictal_stride_sec
+        # self.interictal_stride_sec = interictal_stride_sec
 
         # Cache initialization
         self._summary_cache: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
@@ -299,36 +296,36 @@ class CHBMITPreprocessor:
         self._all_seizure_times_cache[subject_id] = all_seizures
         return all_seizures
     
-    def is_interictal(self, time_sec: float, seizure_times: List[Tuple[float, float]]) -> bool:
-        """
-        Check if a time point is interictal (>= threshold away from any seizure).
+    # def is_interictal(self, time_sec: float, seizure_times: List[Tuple[float, float]]) -> bool:
+    #     """
+    #     Check if a time point is interictal (>= threshold away from any seizure).
         
-        Parameters
-        ---------- 
-        time_sec : float
-            Time point in seconds
-        seizure_times : List[Tuple[float, float]]
-            List of (start, end) seizure times
+    #     Parameters
+    #     ---------- 
+    #     time_sec : float
+    #         Time point in seconds
+    #     seizure_times : List[Tuple[float, float]]
+    #         List of (start, end) seizure times
             
-        Returns
-        -------
-        bool
-            True if interictal, False otherwise
-        """
-        for start_sec, end_sec in seizure_times:
-            # Check if time is within seizure
-            if start_sec <= time_sec <= end_sec:
-                return False
+    #     Returns
+    #     -------
+    #     bool
+    #         True if interictal, False otherwise
+    #     """
+    #     for start_sec, end_sec in seizure_times:
+    #         # Check if time is within seizure
+    #         if start_sec <= time_sec <= end_sec:
+    #             return False
             
-            # Check if time is too close to seizure (within threshold)
-            distance_before = time_sec - end_sec if time_sec > end_sec else float('inf')
-            distance_after = start_sec - time_sec if time_sec < start_sec else float('inf')
+    #         # Check if time is too close to seizure (within threshold)
+    #         distance_before = time_sec - end_sec if time_sec > end_sec else float('inf')
+    #         distance_after = start_sec - time_sec if time_sec < start_sec else float('inf')
             
-            min_distance = min(distance_before, distance_after)
-            if min_distance < self.interictal_threshold_sec:
-                return False
+    #         min_distance = min(distance_before, distance_after)
+    #         if min_distance < self.interictal_threshold_sec:
+    #             return False
         
-        return True
+    #     return True
 
     def canonical_channels(self, raw: Raw) -> Raw:
         """
@@ -355,9 +352,10 @@ class CHBMITPreprocessor:
             if target_name in available_channels:
                 candidates = available_channels[target_name]
                 
-                # Rule: Always take the FIRST occurrence (e.g., T8-P8-0 at idx 14)
-                # This implicitly drops the second occurrence (T8-P8-1 at idx 22)
-                chosen_name, chosen_idx = candidates[0]
+                if len(candidates) > 0:
+                    chosen_name, chosen_idx = candidates[0]
+                else:
+                    raise ValueError(f"Missing required canonical channel: {target_name}")
                 
                 indices_to_keep.append(chosen_idx)
                 rename_map[chosen_name] = target_name
@@ -368,8 +366,6 @@ class CHBMITPreprocessor:
             else:
                 raise ValueError(f"Missing required canonical channel: {target_name}")
 
-        # --- CRITICAL: The operations below must be OUTSIDE the loop ---
-        
         print(f"DEBUG: Picking {len(indices_to_keep)} indices: {indices_to_keep}")
         
         # 3. Perform the Atomic Pick (Removes T8-P8-1 and other unused channels)
@@ -385,22 +381,6 @@ class CHBMITPreprocessor:
         
         return raw
 
-    def detect_bad_channels(self, raw: Raw) -> List[str]:
-        """
-        Only drops channels that are technically broken (flat/disconnected).
-        Does NOT drop channels just because they are noisy/muscular.
-        """
-        bad_channels = []
-        data = raw.get_data()
-        
-        for idx, ch_name in enumerate(raw.ch_names):
-            ch_data = data[idx, :]
-            
-            # Only drop if the signal is essentially a flat line (Dead sensor)
-            if np.var(ch_data) < 1e-15:  # Extremely low variance
-                bad_channels.append(ch_name)
-
-        return bad_channels
     
     def apply_filtering(self, raw: Raw) -> Raw:
         """
@@ -455,89 +435,49 @@ class CHBMITPreprocessor:
         raw_resampled = raw.copy().resample(self.TARGET_SFREQ, npad='auto') 
         return raw_resampled
 
-    def normalize_window(self, window_data: np.ndarray) -> np.ndarray:
-        """
-        Apply Z-score normalization with outlier clipping.
-        Clips outliers first to prevent artifacts from skewing the mean.
-        
-        Parameters
-        ----------
-        window_data : np.ndarray
-            Data array of shape (n_channels, n_samples)
-            
-        Returns
-        -------
-        np.ndarray
-            Normalized data array
-        """
-       
-        # Clip outliers first to prevent artifacts from skewing the mean
-        data_clipped = np.clip(window_data, -500, 500)
-        
-        # Z-score normalization per channel
-        mean = np.mean(data_clipped, axis=1, keepdims=True)
-        std = np.std(data_clipped, axis=1, keepdims=True)
-        
-        #end region
-        data_normalized = (data_clipped - mean) / (std + 1e-18)  # Add epsilon to avoid div by zero
-        
-        return data_normalized
 
-    def extract_multi_scale_windows(self, raw, seizure_times, global_seizure_times, cumulative_start_time):
-        data = raw.get_data()
-        sfreq = raw.info['sfreq']
-        
-        # 1. Define the Time Grid (Every 1 second)
-        time_points_sec = np.arange(1.0, raw.times[-1] + 1.0, 1.0)
-        time_indices = (time_points_sec * sfreq).astype(int)
-        n_timepoints = len(time_points_sec)
+    def extract_epochs_mne(self, raw, seizure_times, global_seizure_times, cumulative_start_time):
+        """
+        Creates 2-second MNE Epochs with labels based on seizure times.
+        """
 
-        # 2. Generate Labels
-        labels = np.zeros(n_timepoints, dtype=np.int32)
+        events = mne.make_fixed_length_events(raw, id=1, duration=2.0)
+
+        valid_events = []
         
-        for i, t_end in enumerate(time_points_sec):
-            t_abs = cumulative_start_time + t_end
-            
-            # Check Seizure
-            is_seizure = False
+        for event in events:
+            sample_idx = event[0]
+            t_start = sample_idx / raw.info['sfreq']
+            t_end = t_start + 2.0
+            # Label as seizure if window overlaps seizure interval (not only if window end is inside)
+            label = 0  # Interictal
             for start, end in seizure_times:
-                if start <= t_end <= end:
-                    labels[i] = 1
-                    is_seizure = True
+                if (t_start < end) and (t_end > start):
+                    label = 1  # Seizure
                     break
+            # Append a copy to avoid mutating the original events array
+            valid_events.append([event[0], event[1], label])
+
+        # Convert back to numpy array for MNE
+        if not valid_events:
+            print("No valid epochs found.")
+            return None
             
-            # Check Interictal
-            if not is_seizure:
-                if self.is_interictal(t_abs, global_seizure_times):
-                    labels[i] = 0
-                else:
-                    labels[i] = -1 # Exclude
-                    
-        # 3. Generate Raw Windows (Delegated to windowing.py)
-        print(f"   -> Slicing windows for {n_timepoints} timepoints...")
-        windows_dict = create_multi_scale_windows(
-            data=data,
-            time_indices=time_indices,
-            window_lengths_sec=self.WINDOW_LENGTHS,
-            sfreq=sfreq
+        valid_events = np.array(valid_events)
+
+        # 4. Create Epochs Object
+        epochs = mne.Epochs(
+            raw, 
+            valid_events, 
+            event_id={'Interictal': 0, 'Seizure': 1},
+            tmin=0, 
+            tmax=2.0, 
+            baseline=None, 
+            preload=True,
+            verbose=False
         )
-
-        # 4. Apply Normalization (Crucial Step Added)
-        # We apply Z-score normalization to the whole batch efficiently
-        print(f"   -> Normalizing windows...")
-
-        for key, windows_batch in windows_dict.items():            
-            # Clip outliers (vectorized)
-            windows_batch = np.clip(windows_batch, -500, 500)
-            
-            # Calculate mean/std along the time axis (axis=2)
-            mean = np.mean(windows_batch, axis=2, keepdims=True)
-            std = np.std(windows_batch, axis=2, keepdims=True)
-            
-            # Z-Score
-            windows_dict[key] = (windows_batch - mean) / (std + 1e-18)
-
-        return windows_dict, labels
+        
+        return epochs
             
     def preprocess_file(
         self,
@@ -574,41 +514,35 @@ class CHBMITPreprocessor:
             # 2. Align to canonical channels
             print(f"     -> Aligning to canonical channels...")
             raw = self.canonical_channels(raw)
-            
-            # 3. Detect and remove bad channels
-            print(f"     -> Detecting bad channels...")
-            bad_channels = self.detect_bad_channels(raw)
-            if bad_channels:
-                print(f"        ! Removing bad channels: {bad_channels}")
-                raw.drop_channels(bad_channels)
-                # If critical channels were removed, we might skip this file
-                if len(raw.ch_names) < 18:  # Keep files with at least 18 good channels
-                    print(f" Too many bad channels ({len(bad_channels)}), skipping file")
-                    return None, None
-            
-            # 4. Apply filtering
+                  
+            # 3. Apply filtering
             print(f"     -> Applying bandpass (0.5-60 Hz) and notch (60 Hz) filters...")
             raw = self.apply_filtering(raw)
             
-            # 5. Downsample to 128 Hz
+            # 4. Downsample to 128 Hz
             print(f"     -> Downsampling to {self.TARGET_SFREQ} Hz...")
             raw = self.downsample(raw)
             
-            # 6. Extract multi-scale windows
-            print(f"     -> Extracting multi-scale windows...")
-            windows_dict, labels = self.extract_multi_scale_windows(
+            # 5. Extract 2-second epochs (seizure + interictal)
+            print(f"-> Extracting 2-second epochs...")
+            epochs = self.extract_epochs_mne(
                 raw=raw,
                 seizure_times=seizure_times,
                 global_seizure_times=global_seizure_times,
                 cumulative_start_time=cumulative_start_time
             )
-            
-            # 7. Clean up
-            del raw
+
+            # 6. Convert Epochs to (windows_dict, labels) for save/load pipeline
+            if epochs is None:
+                del raw
+                gc.collect()
+                return None, None
+            windows_dict = {'2s': epochs.get_data()}
+            labels = epochs.events[:, 2].astype(np.int32)
+            del raw, epochs
             gc.collect()
-            
             return windows_dict, labels
-            
+
         except Exception as e:
             print(f" Error in preprocess_file: {e}")
             return None, None
@@ -648,14 +582,13 @@ class CHBMITPreprocessor:
         # Process each EDF file
         for edf_path in sorted(subject_dir.glob("*.edf")):
             
-            # --- RESUME LOGIC ---
             output_filename = edf_path.name.replace('.edf', '.npz')
             output_path = self.output_dir / subject_id / output_filename
 
             if output_path.exists():
                 print(f"  -> Skipping {edf_path.name} (Already processed)")
-                continue  # <--- THIS IS THE CRITICAL FIX
-            
+                continue  
+
             print(f"  > Processing {edf_path.name}...")
 
             try:
@@ -680,43 +613,10 @@ class CHBMITPreprocessor:
 # Data Splitting Functions
 # ============================================================================
 
-def create_patient_split(
-    subject_ids: List[str],
-    train_ratio: float = 0.8,
-    val_ratio: float = 0.1,
-    test_ratio: float = 0.1,
-    random_seed: Optional[int] = None
-) -> Tuple[List[str], List[str], List[str]]:
-    """
-    Split subjects into train, validation, and test sets.
-    """
-    if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
-        raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
-    
-    if random_seed is not None:
-        np.random.seed(random_seed)
-    
-    shuffled_subjects = list(subject_ids).copy() # Ensure it's a list
-    if random_seed is not None:
-        np.random.shuffle(shuffled_subjects)
-    else:
-        shuffled_subjects = sorted(shuffled_subjects)
-    
-    n_subjects = len(shuffled_subjects)
-    n_train = int(n_subjects * train_ratio)
-    n_val = int(n_subjects * val_ratio)
-    
-    train_subjects = shuffled_subjects[:n_train]
-    val_subjects = shuffled_subjects[n_train:n_train + n_val]
-    test_subjects = shuffled_subjects[n_train + n_val:]
-    
-    return train_subjects, val_subjects, test_subjects
-
-
 def load_preprocessed_windows(
     preprocessed_dir: Path,
     subject_ids: List[str],
-    window_scale: str = '5s',
+    window_scale: str = '2s',
     filter_labels: bool = True
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -746,24 +646,19 @@ def load_preprocessed_windows(
                     continue
                 
                 windows = data[window_scale]
-                
-                # NOTE: This assumes your preprocessing saved a 'labels' key.
-                # If your current preprocessing doesn't save labels, this line will fail later.
-                if 'labels' in data:
-                    labels = data['labels']
-                    
+                if 'labels' not in data:
                     if filter_labels:
-                        mask = (labels == 0) | (labels == 1)
-                        windows = windows[mask]
-                        labels = labels[mask]
-                        labels = (labels == 1).astype(np.int32)
-                    
-                    all_labels.append(labels)
-                else:
-                    # Fallback if no labels exist (e.g. unsupervised training)
-                    if filter_labels: 
-                        print(f"Warning: No 'labels' found in {npz_path}, skipping label filtering.")
-                
+                        print(f"Warning: No 'labels' in {npz_path}, skipping file.")
+                        continue
+                    all_windows.append(windows)
+                    continue
+                labels = data['labels']
+                if filter_labels:
+                    mask = (labels == 0) | (labels == 1)
+                    windows = windows[mask]
+                    labels = labels[mask]
+                    labels = (labels == 1).astype(np.int32)
+                all_labels.append(labels)
                 all_windows.append(windows)
                 
             except Exception as e:
