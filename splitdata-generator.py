@@ -142,3 +142,74 @@ print("Data Pipelines Created Successfully")
 
 # --- Model Training Example ---
 # model.fit(train_ds, validation_data=val_ds, epochs=10)
+
+def build_cnn_model(input_shape):
+    model = models.Sequential()
+
+    # 1. Temporal Block
+    model.add(layers.Conv1D(32, 64, activation='relu', input_shape=input_shape, padding='same'))
+    model.add(layers.BatchNormalization())
+    model.add(layers.MaxPooling1D(2))
+
+    # 2. Spatial Block
+    model.add(layers.Conv1D(64, 16, activation='relu', padding='same'))
+    model.add(layers.BatchNormalization())
+    model.add(layers.MaxPooling1D(2))
+
+    # 3. Global Block
+    model.add(layers.Conv1D(128, 8, activation='relu', padding='same'))
+    model.add(layers.GlobalAveragePooling1D())
+
+    # Classification
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dropout(0.5))
+    model.add(layers.Dense(1, activation='sigmoid'))
+
+    model.compile(optimizer='adam', loss='binary_crossentropy',
+                  metrics=['accuracy', tf.keras.metrics.Recall(name='recall')])
+    return model
+
+
+model = build_cnn_model(input_shape=(256, 18))
+# model.summary()
+
+# ============================================
+# 3. TRAIN & PREDICT (The Fix)
+# ============================================
+print("\n🚀 Starting Training...")
+
+# FIX: Use train_ds and val_ds (not train_gen)
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=10,
+    callbacks=[
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+    ]
+)
+
+print("\n📊 Evaluating on Test Set...")
+# Evaluate returns [loss, accuracy, recall]
+test_results = model.evaluate(test_ds)
+print(f"Test Loss: {test_results[0]:.4f}")
+print(f"Test Accuracy: {test_results[1]:.4f}")
+print(f"Test Recall: {test_results[2]:.4f}")
+
+print("\n🔮 Generating Predictions...")
+# Get probabilities (0.0 to 1.0)
+y_pred_probs = model.predict(test_ds)
+# Convert to classes (0 or 1)
+y_pred_classes = (y_pred_probs > 0.5).astype(int)
+
+# To see True Labels, we must extract them from the dataset (unbatching needed)
+y_true = np.concatenate([y for x, y in test_ds], axis=0)
+
+print(f"Prediction Shape: {y_pred_classes.shape}")
+print(f"True Labels Shape: {y_true.shape}")
+
+# Optional: Confusion Matrix
+from sklearn.metrics import confusion_matrix
+
+cm = confusion_matrix(y_true, y_pred_classes)
+print("\nConfusion Matrix:")
+print(cm)
