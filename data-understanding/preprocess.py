@@ -10,7 +10,6 @@ warnings.filterwarnings("ignore")
 dataset_path = 'data-understanding/data/chb-mit'
 subject_folders = deniz.get_folder_names(dataset_path)
 edf_paths = deniz.get_edf_paths(dataset_path, subject_folders)
-
 FINAL_CHANNELS = [
     'FP1-F7', 'F7-T7', 'T7-P7', 'P7-O1',
     'FP1-F3', 'F3-C3', 'C3-P3', 'P3-O1',
@@ -22,7 +21,12 @@ output_folders = ['2s_epochs_processed', '4s_epochs_processed', '6s_epochs_proce
                   '10s_epochs_processed']
 epoch_lengths = [2, 4, 6, 8, 10]
 
-df= pd.read_csv("data-understanding/all_preprocess_pipeline_seizure.csv")
+df = pd.read_csv('data-understanding/only_seizures_for_preprocess.csv')
+df['file'] = df['file'].str.replace('_processed', '', regex=False)
+# df.to_csv('data-understanding/all_preprocess_pipeline_seizure.csv', index=False)
+
+
+
 
 def preprocess_pipe(seizure_paths, final_channels, df, epoch_length, output_folder):
     if not os.path.exists(output_folder):
@@ -95,5 +99,5 @@ def preprocess_pipe(seizure_paths, final_channels, df, epoch_length, output_fold
     print(f"\n✨ İşlem bitti! Toplam {processed_count} dosya işlendi.")
 
 
-preprocess_pipe(seizure_paths=edf_paths[0:3], final_channels=FINAL_CHANNELS, df=df, epoch_length=2,
+preprocess_pipe(seizure_paths=edf_paths[2:3], final_channels=FINAL_CHANNELS, df=df, epoch_length=2,
                 output_folder='02_epochs')

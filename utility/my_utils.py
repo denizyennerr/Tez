@@ -10,6 +10,9 @@ import re
 import matplotlib.pyplot as plt
 import json
 import shutil
+import numpy as np
+import os
+import random
 
 WINDOW_LENGTHS = [2.0]
 TARGET_SFREQ = 128.0  # Hz
@@ -485,7 +488,43 @@ def standardize_channels(raw):
 ##Preprocessing functions
 
 
-import mne
+def fix_eeg_channels_version_2(file_path, final_channels):
+    try:
+        # 1. ADIM: Veriyi yükleyerek oku (Unique isim sorunu için preload=True daha güvenli)
+        raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False)
+
+        # MNE bazen "-" kanalını otomatik isimlendirir, onları temizleyelim
+        # Sadece bizim istediğimiz final_channels listesindekileri tutalım
+        current_channels = raw.ch_names
+
+        # T8-P8 özel durum yönetimi (Eğer listede yoksa bile isimlendirme için bak)
+        if 'T8-P8-1' in current_channels:
+            raw.rename_channels({'T8-P8-1': 'T8-P8'})
+        elif 'T8-P8-0' in current_channels and 'T8-P8' not in current_channels:
+            raw.rename_channels({'T8-P8-0': 'T8-P8'})
+
+        # Sadece final_channels içinde olanları seç, diğerlerini at
+        available_to_keep = [ch for ch in final_channels if ch in raw.ch_names]
+        raw.pick(available_to_keep)
+
+        # Eksik kanal varsa doldur (Shape bozulmasın diye 0 ile doldurulmuş kanal ekler)
+        missing_channels = set(final_channels) - set(raw.ch_names)
+        if missing_channels:
+            print(f"⚠️ {os.path.basename(file_path)} eksik kanallar: {missing_channels}. Sıfır verisi ekleniyor.")
+            # Eksik kanalları 0 verisiyle ekleme yapısı (opsiyonel ama shape tutarlılığı için önemli)
+            for m_ch in missing_channels:
+                data = np.zeros((1, len(raw.times)))
+                info = mne.create_info([m_ch], raw.info['sfreq'], ch_types='eeg')
+                raw_extra = mne.io.RawArray(data, info)
+                raw.add_channels([raw_extra])
+
+        # Kanal sıralamasını sabitle (Modelin girişi için kritik!)
+        raw.reorder_channels(final_channels)
+
+        return raw
+    except Exception as e:
+        print(f"❌ Kanal hatası ({os.path.basename(file_path)}): {e}")
+        return None
 
 
 def fix_eeg_channels(file_path, final_channels):
@@ -527,6 +566,44 @@ def fix_eeg_channels(file_path, final_channels):
         return None
 
 
+def apply_filtering_version2(raw):
+    """
+    Apply bandpass and notch filtering.
+    - 5th-order Butterworth bandpass 0.5–60 Hz (zero-phase)
+    - Notch filter at 60 Hz
+
+    Parameters
+    ----------
+    raw : Raw
+        MNE Raw object
+
+    Returns
+    -------
+    Raw
+        Filtered Raw object
+    """
+    # Bandpass filter: 0.5-60 Hz, 5th order Butterworth, zero-phase
+    if not raw.preload:
+        raw.load_data(verbose='error')
+
+    raw_filtered = raw.copy().filter(
+        l_freq=0.5,
+        h_freq=60.0,
+        method='iir',
+        iir_params={'order': 5, 'ftype': 'butter'},
+        phase='zero',
+        verbose='error'
+    )
+
+    # Notch filter at 60 Hz
+    raw_filtered.notch_filter(
+        freqs=60.0,
+        method='iir',
+        verbose='error'
+    )
+
+    return raw_filtered
+
 def apply_filtering(raw):
     """
     Apply bandpass and notch filtering.
@@ -562,6 +639,15 @@ def apply_filtering(raw):
 
     return raw_filtered
 
+
+def downsample_version2(raw, TARGET_SFREQ=128.0):
+    # Veri bellekte değilse resample hata verebilir veya çalışmayabilir
+    if not raw.preload:
+        raw.load_data()
+
+    # Anti-aliasing filtresi otomatik uygulanır
+    raw_resampled = raw.copy().resample(TARGET_SFREQ, npad='auto', verbose='error')
+    return raw_resampled
 
 def downsample(raw, TARGET_SFREQ=128.0):
     """
@@ -661,7 +747,39 @@ def build_seizure_annotations_for_file(df, file_name):
 
     return annotations, durations, descriptions
 
+def generate_epoch_labels_version2(epochs, raw):
+    """
+    Epoch'ların seizure içerip içermediğini belirleyen label listesi üretir.
+    NOT: raw objesi resample edilmişse, sfreq de güncel (128) olmalıdır.
+    """
+    sfreq = raw.info["sfreq"]  # Resample sonrası 128.0 olmalı
+    ann = raw.annotations
+    labels = []
 
+    # Annotation aralıklarını hazırla
+    seizure_intervals = []
+    if ann is not None:
+        for onset, duration, desc in zip(ann.onset, ann.duration, ann.description):
+            if desc == "seizure":
+                seizure_intervals.append((onset, onset + duration))
+
+    # Her epoch için kontrol
+    for event in epochs.events:
+        # event[0] -> sample indisi. sfreq'e bölünce saniyeyi verir.
+        epoch_start = event[0] / sfreq
+        # epochs.tmax genelde 2.0 (duration) civarıdır.
+        epoch_end = epoch_start + (epochs.tmax - epochs.tmin)
+
+        label = 0
+        for sz_start, sz_end in seizure_intervals:
+            # Overlap (çakışma) kontrolü
+            overlap = not (epoch_end <= sz_start or epoch_start >= sz_end)
+            if overlap:
+                label = 1
+                break
+        labels.append(label)
+
+    return labels
 
 def generate_epoch_labels(epochs, raw):
     """
@@ -767,3 +885,42 @@ def process_to_temp_files(list_preprocessed, df, temp_dir="temp_npy", epoch_leng
             print(f"❌ Hata: {file_name} -> {str(e)}")
 
     return processed_files
+
+################ Verify processed
+import numpy as np
+import os
+import random
+import matplotlib.pyplot as plt
+
+
+def verify_processed_data(folder_path):
+    files = [f for f in os.listdir(folder_path) if f.endswith('.npz')]
+    if not files:
+        print("❌ Klasörde .npz dosyası bulunamadı!")
+        return
+
+    # Rastgele bir dosya seç
+    sample_file = random.choice(files)
+    data = np.load(os.path.join(folder_path, sample_file))
+
+    X = data['x']
+    y = data['y']
+
+    print(f"📄 Dosya: {sample_file}")
+    print(f"📊 X Shape: {X.shape} (Epoch, Kanal, Sample)")
+    print(f"🎯 y Shape: {y.shape} (Labels)")
+    print(f"✅ Seizure Oranı: %{(sum(y) / len(y)) * 100:.2f} ({int(sum(y))} epoch)")
+
+    # Eğer seizure varsa, ilk seizure epoch'unu görselleştir
+    seizure_idxs = np.where(y == 1)[0]
+    idx = seizure_idxs[0] if len(seizure_idxs) > 0 else 0
+
+    plt.figure(figsize=(12, 6))
+    for i in range(min(5, X.shape[1])):  # İlk 5 kanalı çizdir
+        plt.plot(X[idx, i, :] + (i * 100))  # Kanalları üst üste binmesin diye kaydırdık
+
+    label_text = "SEIZURE" if y[idx] == 1 else "HEALTHY"
+    plt.title(f"{sample_file} - Epoch: {idx} - Label: {label_text}")
+    plt.xlabel("Samples")
+    plt.ylabel("Channels (Offset applied)")
+    plt.show()
