@@ -173,6 +173,11 @@ def build_cnn_model(input_shape):
 model = build_cnn_model(input_shape=(256, 18))
 # model.summary()
 
+# from torchsummary import summary
+# imgSize = 32
+# # count the total number of parameters in the model
+# summary(net,(3,imgSize,imgSize))
+
 # ============================================
 # 3. TRAIN & PREDICT (The Fix)
 # ============================================
@@ -201,7 +206,7 @@ y_pred_probs = model.predict(test_ds)
 # Convert to classes (0 or 1)
 y_pred_classes = (y_pred_probs > 0.5).astype(int)
 
-# To see True Labels, we must extract them from the dataset (unbatching needed)
+# To see True Labels, we must extract them from the dataset
 y_true = np.concatenate([y for x, y in test_ds], axis=0)
 
 print(f"Prediction Shape: {y_pred_classes.shape}")
@@ -213,3 +218,49 @@ from sklearn.metrics import confusion_matrix
 cm = confusion_matrix(y_true, y_pred_classes)
 print("\nConfusion Matrix:")
 print(cm)
+
+
+# Visualization
+import matplotlib.pyplot as plt
+
+# Optional: Set a clean style for professional-looking plots
+plt.style.use('seaborn-v0_8-whitegrid')
+
+if 'history' in locals():
+    h = history.history
+    epochs = range(1, len(h['loss']) + 1)
+
+    # Find the specific recall key names (e.g., 'recall', 'recall_1')
+    rec_key = [k for k in h.keys() if 'recall' in k and 'val' not in k][0]
+    val_rec_key = [k for k in h.keys() if 'val_recall' in k][0]
+
+    # Create figure with 3 subplots
+    fig, ax = plt.subplots(1, 3, figsize=(20, 5))
+
+    # 1. Loss Plot
+    ax[0].plot(epochs, h['loss'], 'b-', label='Train Loss')
+    ax[0].plot(epochs, h['val_loss'], 'r--', label='Val Loss')
+    ax[0].set_title('Loss')
+    ax[0].legend()
+    ax[0].grid(True)
+
+    # 2. Accuracy Plot
+    ax[1].plot(epochs, h['accuracy'], 'b-', label='Train Acc')
+    ax[1].plot(epochs, h['val_accuracy'], 'r--', label='Val Acc')
+    ax[1].set_title('Accuracy')
+    ax[1].legend()
+    ax[1].grid(True)
+
+    # 3. Recall Plot
+    ax[2].plot(epochs, h[rec_key], 'b-', label='Train Recall')
+    ax[2].plot(epochs, h[val_rec_key], 'r--', label='Val Recall')
+    ax[2].set_title('Recall')
+    ax[2].legend()
+    ax[2].grid(True)
+
+    plt.tight_layout()
+    plt.savefig('data-understanding/visualizations/results.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+else:
+    print(" No history object found. Run model.fit() first.")
