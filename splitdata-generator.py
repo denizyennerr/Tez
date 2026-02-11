@@ -22,9 +22,8 @@ file_ids = [os.path.basename(f).split('_P')[0] for f in all_files]
 unique_ids = list(set(file_ids))
 
 # 3. Split IDs (70% Train, 15% Val, 15% Test)
-train_ids, temp_ids = train_test_split(unique_ids, test_size=0.3, random_state=42)
+train_ids, temp_ids = train_test_split(unique_ids, train_size=0.7, random_state=42)
 val_ids, test_ids = train_test_split(temp_ids, test_size=0.5, random_state=42)
-
 
 # 4. Filter file paths based on split IDs
 def filter_files(file_list, target_ids):
@@ -147,17 +146,17 @@ def build_cnn_model(input_shape):
     model = models.Sequential()
 
     # 1. Temporal Block
-    model.add(layers.Conv1D(32, 64, activation='relu', input_shape=input_shape, padding='same'))
+    model.add(layers.Conv2D(32, 64, activation='relu', input_shape=input_shape, padding='same'))
     model.add(layers.BatchNormalization())
     model.add(layers.MaxPooling1D(2))
 
     # 2. Spatial Block
-    model.add(layers.Conv1D(64, 16, activation='relu', padding='same'))
+    model.add(layers.Conv2D(64, 16, activation='relu', padding='same'))
     model.add(layers.BatchNormalization())
     model.add(layers.MaxPooling1D(2))
 
     # 3. Global Block
-    model.add(layers.Conv1D(128, 8, activation='relu', padding='same'))
+    model.add(layers.Conv2D(128, 8, activation='relu', padding='same'))
     model.add(layers.GlobalAveragePooling1D())
 
     # Classification
