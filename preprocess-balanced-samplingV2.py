@@ -118,7 +118,7 @@ def process_and_save_npz(
 
             # ---------------------------
             # 8. BALANCING (TRAIN ONLY)
-            # ---------------------------
+            # --------------------
             if split == "train":
 
                 seizure_idx = np.where(labels == 1)[0]
@@ -180,7 +180,6 @@ def process_and_save_npz(
             # ---------------------------
             X_final = X[final_idx]
             y_final = labels[final_idx]
-            meta_final = epoch_starts[final_idx]
 
             # ---------------------------
             # 10. SAVE
@@ -193,8 +192,7 @@ def process_and_save_npz(
             np.savez_compressed(
                 os.path.join(subject_dir, save_name),
                 x=X_final,
-                y=y_final,
-                meta=meta_final
+                y=y_final
             )
 
             print(

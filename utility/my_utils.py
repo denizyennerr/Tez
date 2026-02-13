@@ -14,7 +14,7 @@ import numpy as np
 import os
 import random
 
-WINDOW_LENGTHS = [2.0]
+
 TARGET_SFREQ = 128.0  # Hz
 SOURCE_SFREQ = 256.0  # Hz
 
