@@ -180,3 +180,39 @@ def build_eeg_cnn(input_shape=(18, 256)):
     )
     return model
 
+# --- 5. MAIN EXECUTION ---
+
+if __name__ == "__main__":
+    # A. Index Data
+    index = get_subject_index(DATASET_ROOT)
+
+    # B. Split Data
+    train_files, test_files = get_loso_split(index, TEST_SUBJECT_ID)
+
+    # C. Compute Stats (Strictly on Train files)
+    mean, std = compute_global_stats(train_files)
+    print(f"Stats Shape - Mean: {mean.shape}, Std: {std.shape}")
+
+    # D. Create Datasets
+    train_ds = create_dataset(train_files, mean, std, is_train=True)
+    test_ds = create_dataset(test_files, mean, std, is_train=False)
+
+    # E. Train
+    model = build_eeg_cnn(input_shape=(N_CHANNELS, EPOCH_LENGTH))
+    model.summary()
+
+    # Callbacks
+    checkpoint = callbacks.ModelCheckpoint(
+        f"model_{TEST_SUBJECT_ID}.h5", save_best_only=True, monitor='val_auc', mode='max'
+    )
+    early_stop = callbacks.EarlyStopping(
+        monitor='val_auc', patience=5, restore_best_weights=True
+    )
+
+    history = model.fit(
+        train_ds,
+        validation_data=test_ds,
+        epochs=20,
+        callbacks=[checkpoint, early_stop],
+        verbose=1
+    )
