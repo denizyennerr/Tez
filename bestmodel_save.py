@@ -88,9 +88,9 @@ def run_loso_training(npz_dir, test_subject, use_zscore=True, save_best=True, pl
 
 
 if __name__ == "__main__":
-    npz_dir = "dataset_dummy"
+    npz_dir = "dataset_v2"
     # Validation klasöründeki tüm denek isimlerini al
-    test_subjects = deniz.get_folder_names('dataset_dummy/val')
+    test_subjects = deniz.get_folder_names('dataset_v2/val')
     print("Test edilecek denekler:", test_subjects)
 
     # Her bir denek için ayrı ayrı eğitim yap

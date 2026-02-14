@@ -78,7 +78,6 @@ def get_npz_index(dataset_root):
 
 
 def loso_split(index_dict, test_subjects):
-
     if isinstance(test_subjects, str):
         test_subjects = [test_subjects]
 
@@ -154,7 +153,7 @@ def normalized_batch_generator(file_list, mean, std, batch_size=32):
         yield X, y
 
 
-def build_cnn_model(n_channels=18, n_samples=256):
+def build_cnn_model(n_channels=18, n_samples=256, lr=0.001):
     inputs = layers.Input(shape=(n_channels, n_samples))
 
     x = layers.Permute((2, 1))(inputs)
@@ -176,7 +175,7 @@ def build_cnn_model(n_channels=18, n_samples=256):
     model = models.Model(inputs, outputs)
 
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(1e-3),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
         loss="binary_crossentropy",
         metrics=["accuracy", tf.keras.metrics.AUC()]
     )

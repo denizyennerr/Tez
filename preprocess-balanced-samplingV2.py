@@ -9,19 +9,16 @@ import utility.my_utils as deniz
 dataset_path = 'data-understanding/data/chb-mit'
 folder_names = deniz.get_folder_names(dataset_path)
 edf_paths = deniz.get_edf_paths(dataset_path, folder_names)
-
 FINAL_CHANNELS = [
     'FP1-F7', 'F7-T7', 'T7-P7', 'P7-O1',
     'FP1-F3', 'F3-C3', 'C3-P3', 'P3-O1',
     'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2',
     'FP2-F8', 'F8-T8', 'T8-P8', 'P8-O2',
     'FZ-CZ', 'CZ-PZ'
-]
-
+],
 df = pd.read_csv('data-understanding/all_preprocess_pipeline_seizure.csv')
-
-# Dataframe file içerisinden filterleyip seizure'Lıları seçiyoruz
 seizure_file_list = ( df['file'].tolist())
+
 seizure_set = {f.strip() for f in seizure_file_list}
 
 # 2. edf_paths listesini filtreliyoruz
@@ -29,6 +26,8 @@ filtered_paths = [
     path for path in edf_paths
     if os.path.basename(path) in seizure_set
 ]
+
+
 
 # Sonucu görmek için:
 print(f"Toplam dosya yolu: {len(edf_paths)}")
@@ -83,7 +82,7 @@ def process_and_save_npz(
             # ---------------------------
             # 4. Annotation
             # ---------------------------
-            annotations, _, _ = deniz.build_seizure_annotations_for_file(
+            annotations, _, _ = deniz.build_seizure_annotations_for_file_v2(
                 seizure_df,
                 file_name
             )
@@ -118,7 +117,7 @@ def process_and_save_npz(
 
             # ---------------------------
             # 8. BALANCING (TRAIN ONLY)
-            # --------------------
+            # ---------------------------
             if split == "train":
 
                 seizure_idx = np.where(labels == 1)[0]
@@ -213,13 +212,13 @@ def process_and_save_npz(
 process_and_save_npz(
     edf_list=filtered_paths,
     seizure_df=df,
-    output_dir="dataset/train",
+    output_dir="dataset_v2/train",
     split="train"
 )
 
 process_and_save_npz(
     edf_list=filtered_paths,
     seizure_df=df,
-    output_dir="dataset/val",
+    output_dir="dataset_v2/val",
     split="val"
 )

@@ -710,6 +710,46 @@ def save_processed_edfs(processed_raw_list, output_folder="processed_files"):
             print(f"Hata oluştu ({filename}): {e}")
 ####################################################################
 
+def build_seizure_annotations_for_file_v2(df, file_name):
+    """
+    Belirli bir dosya adı için dataframe içindeki tüm seizure aralıklarını bulur
+    ve bir MNE Annotations objesi oluşturur.
+    """
+    # Sadece dosya adının kendisini al (yolu kırp)
+    base_name = os.path.basename(file_name)
+
+    # Dosya adına göre filtreleme (base name ile)
+    df_file = df[df["file"] == base_name]
+
+    # Eğer dosyada hiç seizure yoksa boş bir annotation yapısı veya None döner
+    if df_file.empty:
+        return None, [], []
+
+    onsets = []
+    durations = []
+    descriptions = []
+
+    # Aynı dosya ismine sahip tüm seizure'lar üzerinde döner
+    for _, row in df_file.iterrows():
+        start = float(row["seizure_start_sec"])
+        end = float(row["seizure_end_sec"])
+
+        duration = end - start
+
+        onsets.append(start)
+        durations.append(duration)
+        descriptions.append("seizure")
+
+    # Tüm seizure'ları içeren tek bir Annotations objesi oluşturulur
+    annotations = mne.Annotations(
+        onset=onsets,
+        duration=durations,
+        description=descriptions
+    )
+    return annotations, durations, descriptions
+
+
+
 
 def build_seizure_annotations_for_file(df, file_name):
     """
@@ -747,36 +787,74 @@ def build_seizure_annotations_for_file(df, file_name):
 
     return annotations, durations, descriptions
 
-def generate_epoch_labels_version2(epochs, raw):
+def generate_epoch_labels_version2(epochs, raw, overlap_threshold=0.5):
     """
     Epoch'ların seizure içerip içermediğini belirleyen label listesi üretir.
-    NOT: raw objesi resample edilmişse, sfreq de güncel (128) olmalıdır.
+
+    YENİLİK:
+    Artık sadece 'dokunması' yetmiyor. Epoch süresinin belirli bir oranının (overlap_threshold)
+    nöbet ile çakışması gerekiyor. Bu, 'Label Noise'u engeller.
+
+    Parameters
+    ----------
+    epochs : mne.Epochs
+        Fixed length epochs objesi.
+    raw : mne.io.Raw
+        Annotation'ları içeren Raw objesi.
+    overlap_threshold : float, optional
+        0.0 ile 1.0 arası değer. Varsayılan 0.5 (%50).
+        Eğer epoch'un %50'sinden fazlası nöbet ise '1' etiketini alır.
+
+    Returns
+    -------
+    list
+        0 ve 1'lerden oluşan etiket listesi.
     """
-    sfreq = raw.info["sfreq"]  # Resample sonrası 128.0 olmalı
+    sfreq = raw.info["sfreq"]  # Resample sonrası güncel frekans (örn: 128.0)
     ann = raw.annotations
     labels = []
 
-    # Annotation aralıklarını hazırla
+    # 1. Annotation (Nöbet) aralıklarını hazırla
     seizure_intervals = []
     if ann is not None:
         for onset, duration, desc in zip(ann.onset, ann.duration, ann.description):
-            if desc == "seizure":
+            # Description içinde 'seizure' geçiyorsa (bazen 'Seizure 1' vb. olabilir, lower() ile garantiye alalım)
+            if "seizure" in desc.lower():
                 seizure_intervals.append((onset, onset + duration))
 
-    # Her epoch için kontrol
+    # Epoch süresini hesapla (örn: 2.0 saniye)
+    epoch_duration = epochs.tmax - epochs.tmin
+
+    # 2. Her epoch için kontrol
     for event in epochs.events:
-        # event[0] -> sample indisi. sfreq'e bölünce saniyeyi verir.
+        # event[0] -> sample indisi.
         epoch_start = event[0] / sfreq
-        # epochs.tmax genelde 2.0 (duration) civarıdır.
-        epoch_end = epoch_start + (epochs.tmax - epochs.tmin)
+        epoch_end = epoch_start + epoch_duration
 
         label = 0
+
+        # Bu epoch herhangi bir nöbet aralığı ile yeterince çakışıyor mu?
         for sz_start, sz_end in seizure_intervals:
-            # Overlap (çakışma) kontrolü
-            overlap = not (epoch_end <= sz_start or epoch_start >= sz_end)
-            if overlap:
+
+            # --- YENİ MANTIK: Intersection (Kesişim) Hesaplama ---
+
+            # Kesişimin başlangıcı: İki başlangıçtan büyük olan
+            intersection_start = max(epoch_start, sz_start)
+
+            # Kesişimin bitişi: İki bitişten küçük olan
+            intersection_end = min(epoch_end, sz_end)
+
+            # Kesişim süresi (Negatif çıkarsa çakışma yok demektir, 0 alırız)
+            intersection_duration = max(0, intersection_end - intersection_start)
+
+            # Çakışma oranı hesapla
+            ratio = intersection_duration / epoch_duration
+
+            # Eğer oran eşikten büyükse veya eşitse NÖBET (1) olarak işaretle
+            if ratio >= overlap_threshold:
                 label = 1
-                break
+                break  # Bir nöbetle çakışması yeterli, diğerlerine bakmaya gerek yok.
+
         labels.append(label)
 
     return labels
