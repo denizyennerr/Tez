@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import os
 
+# tf.keras.callbacks.ModelCheckpoint(filepath='./checkpoints', verbose=1, save_best_only=True)
 
 def run_loso_training(npz_dir, test_subject, use_zscore=True, save_best=True, plot_history=True):
     index = yener.get_npz_index(npz_dir)
@@ -18,14 +19,14 @@ def run_loso_training(npz_dir, test_subject, use_zscore=True, save_best=True, pl
         print("Computing Z-score stats...")
         mean, std = yener.compute_zscore_stats(train_files)
 
-        train_gen = yener.normalized_batch_generator(train_files, mean, std)
-        val_gen = yener.normalized_batch_generator(val_files, mean, std)
+        train_gen = yener.normalized_batch_generator_v2(train_files, mean, std)
+        val_gen = yener.normalized_batch_generator_v2(val_files, mean, std)
 
     else:
-        train_gen = yener.batch_generator(train_files)
-        val_gen = yener.batch_generator(val_files)
+        train_gen = yener.robust_batch_generator(train_files)
+        val_gen = yener.robust_batch_generator(val_files)
 
-    model = yener.build_cnn_model()
+    model = yener.build_simple_cnn()
 
     callbacks = []
 
@@ -44,9 +45,9 @@ def run_loso_training(npz_dir, test_subject, use_zscore=True, save_best=True, pl
     history = model.fit(
         train_gen,
         validation_data=val_gen,
-        steps_per_epoch=200,
-        validation_steps=50,
-        epochs=30,
+        steps_per_epoch=50,
+        validation_steps=10,
+        epochs=10,
         callbacks=callbacks if callbacks else None
     )
 
@@ -54,8 +55,8 @@ def run_loso_training(npz_dir, test_subject, use_zscore=True, save_best=True, pl
         plt.figure(figsize=(12, 4))
 
         plt.subplot(1, 2, 1)
-        plt.plot(history.history['loss'], label='Eğitim Loss')
-        plt.plot(history.history['val_loss'], label='Doğrulama Loss')
+        plt.plot(history.history['loss'], label='Training Loss')
+        plt.plot(history.history['val_loss'], label='Validation Loss')
         plt.title('Loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
@@ -63,15 +64,15 @@ def run_loso_training(npz_dir, test_subject, use_zscore=True, save_best=True, pl
 
         plt.subplot(1, 2, 2)
         if 'accuracy' in history.history:
-            plt.plot(history.history['accuracy'], label='Eğitim Accuracy')
-            plt.plot(history.history['val_accuracy'], label='Doğrulama Accuracy')
+            plt.plot(history.history['accuracy'], label='Training Accuracy')
+            plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
             plt.title('Accuracy')
         elif 'acc' in history.history:
-            plt.plot(history.history['acc'], label='Eğitim Accuracy')
-            plt.plot(history.history['val_acc'], label='Doğrulama Accuracy')
+            plt.plot(history.history['acc'], label='Training Accuracy')
+            plt.plot(history.history['val_acc'], label='Validation Accuracy')
             plt.title('Accuracy')
         else:
-            plt.text(0.5, 0.5, 'Accuracy metric yok', ha='center', va='center')
+            plt.text(0.5, 0.5, 'Accuracy metric does not exist', ha='center', va='center')
         plt.xlabel('Epoch')
         plt.ylabel('Accuracy')
         plt.legend()
@@ -86,12 +87,11 @@ def run_loso_training(npz_dir, test_subject, use_zscore=True, save_best=True, pl
 
 
 if __name__ == "__main__":
-    npz_dir = "dataset_v2"
+    npz_dir = "dataset_dummy"
     # Validation klasöründeki tüm denek isimlerini al
-    test_subjects = deniz.get_folder_names('dataset_v2/val')
-    print("Test edilecek denekler:", test_subjects)
+    test_subjects = deniz.get_folder_names('dataset_dummy/val')
 
     # Her bir denek için ayrı ayrı eğitim yap
     for subject in test_subjects:
-        print(f"\n{'='*50}\nTest edilen denek: {subject}\n{'='*50}")
+        print(f"\n{'=' * 50}\nTest edilen denek: {subject}\n{'=' * 50}")
         model = run_loso_training(npz_dir=npz_dir, test_subject=subject, use_zscore=False)

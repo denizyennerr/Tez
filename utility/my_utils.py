@@ -527,10 +527,10 @@ def fix_eeg_channels_version_2(file_path, final_channels):
         return None
 
 
-def fix_eeg_channels(file_path, final_channels):
+def fix_eeg_channels(file_path, final_channels, verbose=False):
     try:
         # 1. ADIM: Preload=False ile sadece meta veriyi oku (RAM kullanmaz)
-        raw = mne.io.read_raw_edf(file_path, preload=False, verbose=False)
+        raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False)
         ch_names = raw.ch_names
 
         # 2. ADIM: T8-P8 Özel Durumu ve Gereksiz Kanal Tespiti
@@ -540,11 +540,8 @@ def fix_eeg_channels(file_path, final_channels):
         if 'T8-P8-0' in ch_names and 'T8-P8-1' in ch_names:
             to_drop.append('T8-P8-0')
 
-        # Gereksizleri atıyoruz (Hala RAM'e veri yüklemedik)
+        #drop
         raw.drop_channels(to_drop)
-
-        # 3. ADIM: Veriyi Şimdi Yükle (Sadece kalan 23-24 kanalı yükler, RAM tasarrufu sağlar)
-        raw.load_data(verbose=False)
 
         # 4. ADIM: İsimlendirme ve Sıralama
         if 'T8-P8-1' in raw.ch_names:
@@ -558,7 +555,9 @@ def fix_eeg_channels(file_path, final_channels):
             print(f"⚠️ Uyarı: {os.path.basename(file_path)} için kanal sayısı eksik! "
                   f"Mevcut: {len(raw.ch_names)}")
 
-        print(f"✅ {file_path} kanalları başarı ile çevirildi.")
+        if verbose:
+            print(f"✅ {file_path} kanalları başarı ile çevirildi.")
+
         return raw
 
     except Exception as e:
@@ -594,6 +593,7 @@ def apply_filtering_version2(raw):
         phase='zero',
         verbose='error'
     )
+
 
     # Notch filter at 60 Hz
     raw_filtered.notch_filter(
@@ -750,7 +750,6 @@ def build_seizure_annotations_for_file_v2(df, file_name):
 
 
 
-
 def build_seizure_annotations_for_file(df, file_name):
     """
     Belirli bir dosya adı için dataframe içindeki tüm seizure aralıklarını bulur
@@ -786,6 +785,7 @@ def build_seizure_annotations_for_file(df, file_name):
     )
 
     return annotations, durations, descriptions
+
 
 def generate_epoch_labels_version2(epochs, raw, overlap_threshold=0.5):
     """
@@ -858,7 +858,6 @@ def generate_epoch_labels_version2(epochs, raw, overlap_threshold=0.5):
         labels.append(label)
 
     return labels
-
 def generate_epoch_labels(epochs, raw):
     """
     Epoch'ların seizure içerip içermediğini belirleyen label listesi üretir.

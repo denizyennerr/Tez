@@ -87,11 +87,14 @@ def loso_split(index_dict, test_subjects):
     val_files = []
 
     for subject, splits in index_dict.items():
-
         if subject in test_subjects:
+            # Use BOTH train and val from test subject for validation
+            val_files.extend(splits.get("train", []))
             val_files.extend(splits.get("val", []))
         else:
+            # Use BOTH train and val from other subjects for training
             train_files.extend(splits.get("train", []))
+            train_files.extend(splits.get("val", []))
 
     return train_files, val_files
 
@@ -104,6 +107,66 @@ def npz_file_generator(file_list):
         y = data["y"]
 
         yield X, y
+
+
+# # Inside batch_generator, change the yield block to this:
+# if len(X_buffer) == batch_size:
+#     X_batch = np.array(X_buffer)
+#     y_batch = np.array(y_buffer)
+#
+#     # Shuffle X and y IN UNISON to mix classes
+#     indices = np.arange(batch_size)
+#     np.random.shuffle(indices)
+#
+#     yield X_batch[indices], y_batch[indices]
+#
+#     X_buffer, y_buffer = [], []
+
+
+def robust_batch_generator(file_list, batch_size=32, shuffle=True):
+    X_buffer = []
+    y_buffer = []
+
+    while True:
+        if shuffle:
+            np.random.shuffle(file_list)
+
+        for fpath in file_list:
+            try:
+                with np.load(fpath) as data:
+                    keys = data.files
+                    x_key = 'x' if 'x' in keys else 'X'
+                    y_key = 'y' if 'y' in keys else 'y'
+
+                    # Load ALL data from the file into memory
+                    X_file = data[x_key].astype(np.float32)
+                    y_file = data[y_key].astype(np.float32)
+
+                    # --- CRITICAL FIX: SHUFFLE FILE CONTENT ---
+                    # Mix the 1s and 0s immediately so they are not sorted!
+                    if shuffle:
+                        perm = np.random.permutation(len(X_file))
+                        X_file = X_file[perm]
+                        y_file = y_file[perm]
+                    # ------------------------------------------
+
+                    # Now feed the MIXED data into the buffer
+                    for i in range(len(X_file)):
+                        X_buffer.append(X_file[i])
+                        y_buffer.append(y_file[i])
+
+                        if len(X_buffer) >= batch_size:
+                            X_batch = np.array(X_buffer[:batch_size])
+                            y_batch = np.array(y_buffer[:batch_size])
+
+                            X_buffer = X_buffer[batch_size:]
+                            y_buffer = y_buffer[batch_size:]
+
+                            yield X_batch, y_batch
+
+            except Exception as e:
+                print(f"Skipping {fpath}: {e}")
+                continue
 
 
 def batch_generator(file_list, batch_size=32, shuffle=True):
@@ -153,31 +216,61 @@ def normalized_batch_generator(file_list, mean, std, batch_size=32):
         yield X, y
 
 
-def build_cnn_model(n_channels=18, n_samples=256, lr=0.001):
-    inputs = layers.Input(shape=(n_channels, n_samples))
+def normalized_batch_generator_v2(file_list, mean, std, batch_size=32):
+    for X, y in robust_batch_generator(file_list, batch_size):
+        X = apply_zscore(X, mean, std)
+        yield X, y
 
+
+def build_tuned_model():
+    model = build_simple_cnn()
+
+    # Clipnorm prevents exploding gradients from EEG artifacts
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.00001, clipnorm=1.0)
+
+    model.compile(
+        optimizer=optimizer,
+        loss='binary_crossentropy',
+        metrics=['accuracy']
+    )
+    return model
+
+
+def build_simple_cnn(n_channels=18, n_samples=256):
+    inputs = layers.Input(shape=(n_channels, n_samples))
     x = layers.Permute((2, 1))(inputs)
 
-    x = layers.Conv1D(64, 7, padding="same", activation="relu")(x)
+    # Block 1
+    x = layers.Conv1D(16, 5, padding="same", activation="elu")(x)
+    x = layers.BatchNormalization()(x)
     x = layers.MaxPool1D(2)(x)
+    x = layers.Dropout(0.3)(x)  # Increased dropout
 
-    x = layers.Conv1D(128, 5, padding="same", activation="relu")(x)
+    # Block 2
+    x = layers.Conv1D(32, 3, padding="same", activation="elu")(x)
+    x = layers.BatchNormalization()(x)
     x = layers.MaxPool1D(2)(x)
+    x = layers.Dropout(0.3)(x)
 
-    x = layers.Conv1D(256, 3, padding="same", activation="relu")(x)
+    # Block 3 - Add depth
+    x = layers.Conv1D(64, 3, padding="same", activation="elu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.MaxPool1D(2)(x)
+    x = layers.Dropout(0.4)(x)
+
+    # Output
     x = layers.GlobalAveragePooling1D()(x)
-
-    x = layers.Dense(128, activation="relu")(x)
+    x = layers.Dense(64, activation="elu")(x)
     x = layers.Dropout(0.5)(x)
-
     outputs = layers.Dense(1, activation="sigmoid")(x)
 
     model = models.Model(inputs, outputs)
 
+    # INCREASE learning rate
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
-        loss="binary_crossentropy",
-        metrics=["accuracy", tf.keras.metrics.AUC()]
+        optimizer=tf.keras.optimizers.Adam(1e-3),  # 100x higher
+        loss='binary_crossentropy',
+        metrics=['accuracy', tf.keras.metrics.AUC(name='auc')]
     )
-
     return model
+
