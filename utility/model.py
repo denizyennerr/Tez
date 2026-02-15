@@ -77,25 +77,22 @@ def get_npz_index(dataset_root):
     return dict(index)
 
 
+# REPLACE entire loso_split() with:
 def loso_split(index_dict, test_subjects):
     if isinstance(test_subjects, str):
         test_subjects = [test_subjects]
-
     test_subjects = set(test_subjects)
 
-    train_files = []
-    val_files = []
-
+    train_files, val_files = [], []
     for subject, splits in index_dict.items():
         if subject in test_subjects:
-            # Use BOTH train and val from test subject for validation
+            # ✅ HOLD OUT ALL data from test subject
             val_files.extend(splits.get("train", []))
             val_files.extend(splits.get("val", []))
         else:
-            # Use BOTH train and val from other subjects for training
+            # ✅ USE ALL data from training subjects
             train_files.extend(splits.get("train", []))
             train_files.extend(splits.get("val", []))
-
     return train_files, val_files
 
 
@@ -131,42 +128,31 @@ def robust_batch_generator(file_list, batch_size=32, shuffle=True):
         if shuffle:
             np.random.shuffle(file_list)
 
-        for fpath in file_list:
-            try:
-                with np.load(fpath) as data:
-                    keys = data.files
-                    x_key = 'x' if 'x' in keys else 'X'
-                    y_key = 'y' if 'y' in keys else 'y'
+        # Assuming npz_file_generator is defined in your utils
+        for X, y in npz_file_generator(file_list):
 
-                    # Load ALL data from the file into memory
-                    X_file = data[x_key].astype(np.float32)
-                    y_file = data[y_key].astype(np.float32)
+            for i in range(len(X)):
+                X_buffer.append(X[i])
+                y_buffer.append(y[i])
 
-                    # --- CRITICAL FIX: SHUFFLE FILE CONTENT ---
-                    # Mix the 1s and 0s immediately so they are not sorted!
+                # When buffer is full...
+                if len(X_buffer) >= batch_size:
+                    X_batch = np.array(X_buffer[:batch_size])
+                    y_batch = np.array(y_buffer[:batch_size])
+
+                    # Clear processed items
+                    X_buffer = X_buffer[batch_size:]
+                    y_buffer = y_buffer[batch_size:]
+
+                    # --- CRITICAL FIX: SHUFFLE THE BATCH ---
+                    # This mixes 1s and 0s so the model sees both classes at once
                     if shuffle:
-                        perm = np.random.permutation(len(X_file))
-                        X_file = X_file[perm]
-                        y_file = y_file[perm]
-                    # ------------------------------------------
+                        idx = np.arange(len(X_batch))
+                        np.random.shuffle(idx)
+                        X_batch = X_batch[idx]
+                        y_batch = y_batch[idx]
 
-                    # Now feed the MIXED data into the buffer
-                    for i in range(len(X_file)):
-                        X_buffer.append(X_file[i])
-                        y_buffer.append(y_file[i])
-
-                        if len(X_buffer) >= batch_size:
-                            X_batch = np.array(X_buffer[:batch_size])
-                            y_batch = np.array(y_buffer[:batch_size])
-
-                            X_buffer = X_buffer[batch_size:]
-                            y_buffer = y_buffer[batch_size:]
-
-                            yield X_batch, y_batch
-
-            except Exception as e:
-                print(f"Skipping {fpath}: {e}")
-                continue
+                    yield X_batch, y_batch
 
 
 def batch_generator(file_list, batch_size=32, shuffle=True):
@@ -223,10 +209,11 @@ def normalized_batch_generator_v2(file_list, mean, std, batch_size=32):
 
 
 def build_tuned_model():
-    model = build_simple_cnn()
+    model = build_cnn_model()
 
+    # Use 1e-4 instead of default 1e-3
     # Clipnorm prevents exploding gradients from EEG artifacts
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.00001, clipnorm=1.0)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0)
 
     model.compile(
         optimizer=optimizer,
@@ -236,41 +223,46 @@ def build_tuned_model():
     return model
 
 
-def build_simple_cnn(n_channels=18, n_samples=256):
+def build_cnn_model(n_channels=18, n_samples=256):
+    """Lightweight CNN with heavy regularization for small EEG datasets"""
     inputs = layers.Input(shape=(n_channels, n_samples))
-    x = layers.Permute((2, 1))(inputs)
+    x = layers.Permute((2, 1))(inputs)  # (samples, channels) -> (time, channels)
 
-    # Block 1
-    x = layers.Conv1D(16, 5, padding="same", activation="elu")(x)
+    # Block 1: Gentle feature extraction
+    x = layers.Conv1D(16, kernel_size=7, padding='same', activation='relu',
+                      kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
     x = layers.BatchNormalization()(x)
-    x = layers.MaxPool1D(2)(x)
-    x = layers.Dropout(0.3)(x)  # Increased dropout
+    x = layers.MaxPooling1D(4)(x)  # Aggressive pooling reduces overfitting
+    x = layers.Dropout(0.4)(x)  # High dropout for regularization
 
-    # Block 2
-    x = layers.Conv1D(32, 3, padding="same", activation="elu")(x)
+    # Block 2: Minimal additional capacity
+    x = layers.Conv1D(32, kernel_size=5, padding='same', activation='relu',
+                      kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
     x = layers.BatchNormalization()(x)
-    x = layers.MaxPool1D(2)(x)
-    x = layers.Dropout(0.3)(x)
-
-    # Block 3 - Add depth
-    x = layers.Conv1D(64, 3, padding="same", activation="elu")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.MaxPool1D(2)(x)
+    x = layers.MaxPooling1D(4)(x)
     x = layers.Dropout(0.4)(x)
 
-    # Output
+    # Global context instead of dense layers
     x = layers.GlobalAveragePooling1D()(x)
-    x = layers.Dense(64, activation="elu")(x)
-    x = layers.Dropout(0.5)(x)
-    outputs = layers.Dense(1, activation="sigmoid")(x)
+    x = layers.Dropout(0.5)(x)  # Critical final dropout
 
-    model = models.Model(inputs, outputs)
+    outputs = layers.Dense(1, activation='sigmoid',
+                           kernel_regularizer=tf.keras.regularizers.l2(0.01))(x)
 
-    # INCREASE learning rate
+    model = tf.keras.Model(inputs, outputs)
+
+    # Conservative optimizer settings for EEG
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(1e-3),  # 100x higher
+        optimizer=tf.keras.optimizers.Adam(
+            learning_rate=5e-4,  # Slower learning = more stable
+            clipnorm=1.0  # Prevent gradient explosions from artifacts
+        ),
         loss='binary_crossentropy',
-        metrics=['accuracy', tf.keras.metrics.AUC(name='auc')]
+        metrics=[
+            'accuracy',
+            tf.keras.metrics.AUC(name='auc', multi_label=False),
+            tf.keras.metrics.Precision(name='precision'),
+            tf.keras.metrics.Recall(name='recall')
+        ]
     )
     return model
-
