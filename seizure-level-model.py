@@ -1,15 +1,16 @@
-from keras import layers, models, metrics
-from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-
-import tensorflow as tf
+import os
 import glob
-import numpy as np
 import random
-import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+from keras import layers, models, metrics
+from keras.regularizers import l2
+from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import matplotlib
+import matplotlib.pyplot as plt
 import warnings
 
-matplotlib.use('TkAgg')  # veya 'Agg'
+matplotlib.use('TkAgg')
 warnings.filterwarnings("ignore")
 
 
@@ -18,141 +19,186 @@ def collect_npz_paths(root):
 
 
 def load_npz_file(path):
-    data = np.load(path)
+    """Load .npz file with error handling"""
+    try:
+        data = np.load(path)
+        X = data['X']  # (epochs, channels, time)
+        y = data['y']
+        X = np.transpose(X, (0, 2, 1))  # -> (epochs, time, channels)
+        return X, y
+    except Exception as e:
+        print(f"❌ Error loading {path}: {e}")
+        return np.array([]), np.array([])
 
-    X = data['X']  # (epochs, channels, time)
-    y = data['y']
 
-    # CNN için transpose
-    X = np.transpose(X, (0, 2, 1))  # -> (epochs, time, channels)
-
-    return X, y
-
-
-
-def robust_batch_generator(npz_paths, batch_size=32, buffer_size=2000):
+def balanced_batch_generator(npz_paths, batch_size=32, buffer_size=4000, target_ratio=0.15):
     """
-    Dosyaları bir havuzda (buffer) biriktirip karıştırarak batch üretir.
-    Bu yöntem, Batch Normalization stabilitesi için KRİTİKTİR.
-
-    Args:
-        npz_paths: .npz dosya yolları listesi
-        batch_size: Modelin bir seferde göreceği örnek sayısı
-        buffer_size: Havuzda kaç örnek birikince shuffle yapılıp dağıtılacak
+    ✅ FIXED: Handles files with insufficient samples
     """
     paths = npz_paths.copy()
 
-    # Havuz (Buffer)
-    buffer_X = []
-    buffer_y = []
+    buffer_seizure_X = []
+    buffer_seizure_y = []
+    buffer_safe_X = []
+    buffer_safe_y = []
 
     while True:
-        random.shuffle(paths)  # Dosya sırasını her epoch başında karıştır
+        random.shuffle(paths)
 
         for path in paths:
             try:
-                # Dosyayı yükle
                 X_file, y_file = load_npz_file(path)
 
-                # Eğer dosya boşsa veya hata varsa atla
                 if len(X_file) == 0:
                     continue
 
-                # Listeye ekle (Henüz numpy array yapmıyoruz, memory şişmesin)
-                buffer_X.extend(X_file)
-                buffer_y.extend(y_file)
+                seizure_mask = (y_file == 1)
+                safe_mask = (y_file == 0)
 
-                # Havuz doldu mu kontrol et
-                while len(buffer_X) >= buffer_size:
-                    # 1. Havuzu Numpy Array'e çevir
-                    arr_X = np.array(buffer_X)
-                    arr_y = np.array(buffer_y)
+                if np.any(seizure_mask):
+                    buffer_seizure_X.append(X_file[seizure_mask])
+                    buffer_seizure_y.append(y_file[seizure_mask])
 
-                    # 2. Havuzu Karıştır (Global Shuffle)
-                    # Farklı dosyalardan gelen veriler birbirine girer -> Daha iyi eğitim
-                    idx = np.arange(len(arr_X))
-                    np.random.shuffle(idx)
-                    arr_X = arr_X[idx]
-                    arr_y = arr_y[idx]
+                if np.any(safe_mask):
+                    buffer_safe_X.append(X_file[safe_mask])
+                    buffer_safe_y.append(y_file[safe_mask])
 
-                    # 3. Batch'leri Kes ve Yield Et
-                    # Fazlalık kısmı (remainder) havuzda tutacağız
-                    n_batches = len(arr_X) // batch_size
+                if len(buffer_seizure_X) > 0 and len(buffer_safe_X) > 0:
+                    seizure_X = np.concatenate(buffer_seizure_X, axis=0)
+                    seizure_y = np.concatenate(buffer_seizure_y, axis=0)
+                    safe_X = np.concatenate(buffer_safe_X, axis=0)
+                    safe_y = np.concatenate(buffer_safe_y, axis=0)
 
-                    for i in range(n_batches):
-                        start = i * batch_size
-                        end = start + batch_size
-                        yield arr_X[start:end], arr_y[start:end]
+                    # Limit buffer size
+                    if len(seizure_X) > buffer_size // 4:
+                        seizure_X = seizure_X[-buffer_size // 4:]
+                        seizure_y = seizure_y[-buffer_size // 4:]
+                    if len(safe_X) > buffer_size:
+                        safe_X = safe_X[-buffer_size:]
+                        safe_y = safe_y[-buffer_size:]
 
-                    # 4. Kalanları (Remainder) Havuza Geri Koy
-                    # Tam batch olmayan son parçayı atmıyoruz, sonraki dosyalardan gelenlerle birleşecek
-                    remainder_start = n_batches * batch_size
-                    buffer_X = list(arr_X[remainder_start:])
-                    buffer_y = list(arr_y[remainder_start:])
+                    # ✅ FIX: Dynamic batch composition based on available samples
+                    while len(seizure_X) > 0 and len(safe_X) > 0:
+                        # Calculate ideal counts
+                        n_seizure_ideal = int(batch_size * target_ratio)
+                        n_safe_ideal = batch_size - n_seizure_ideal
 
-                    # Bellek temizliği (önemli)
-                    del arr_X, arr_y
-                    # gc.collect() # Her döngüde çağırmak yavaşlatabilir, gerekirse açın
+                        # ✅ CRITICAL: Limit to available samples
+                        n_seizure = min(n_seizure_ideal, len(seizure_X))
+                        n_safe = min(n_safe_ideal, len(safe_X))
+
+                        # Ensure batch is full-sized (if not enough seizure, take more safe)
+                        if n_seizure + n_safe < batch_size:
+                            if len(safe_X) >= (batch_size - n_seizure):
+                                n_safe = batch_size - n_seizure
+                            elif len(seizure_X) >= (batch_size - n_safe):
+                                n_seizure = batch_size - n_safe
+                            else:
+                                # Not enough data for a full batch, break and load more
+                                break
+
+                        # ✅ Sample with available data
+                        if n_seizure > 0 and n_safe > 0:
+                            seizure_idx = np.random.choice(len(seizure_X), n_seizure, replace=False)
+                            safe_idx = np.random.choice(len(safe_X), n_safe, replace=False)
+
+                            batch_X = np.concatenate([
+                                seizure_X[seizure_idx],
+                                safe_X[safe_idx]
+                            ], axis=0)
+                            batch_y = np.concatenate([
+                                seizure_y[seizure_idx],
+                                safe_y[safe_idx]
+                            ], axis=0)
+
+                            # Shuffle within batch
+                            idx = np.arange(len(batch_X))
+                            np.random.shuffle(idx)
+
+                            yield batch_X[idx], batch_y[idx]
+
+                            # Remove used samples
+                            seizure_X = np.delete(seizure_X, seizure_idx, axis=0)
+                            seizure_y = np.delete(seizure_y, seizure_idx, axis=0)
+                            safe_X = np.delete(safe_X, safe_idx, axis=0)
+                            safe_y = np.delete(safe_y, safe_idx, axis=0)
+                        else:
+                            break
+
+                    # Update buffers
+                    buffer_seizure_X = [seizure_X] if len(seizure_X) > 0 else []
+                    buffer_seizure_y = [seizure_y] if len(seizure_y) > 0 else []
+                    buffer_safe_X = [safe_X] if len(safe_X) > 0 else []
+                    buffer_safe_y = [safe_y] if len(safe_y) > 0 else []
 
             except Exception as e:
                 print(f"⚠️ Error loading {path}: {e}")
                 continue
 
-def batch_generator(npz_paths, batch_size=32, shuffle_files=True):
-    paths = npz_paths.copy()
 
-    while True:
+def validation_generator(npz_paths, batch_size=32):
+    """
+    ✅ FIXED: Added infinite loop
+    """
+    while True:  # ← MUST BE HERE
+        for path in npz_paths:
+            try:
+                X, y = load_npz_file(path)
 
-        if shuffle_files:
-            random.shuffle(paths)
+                if len(X) == 0:
+                    continue
 
-        for path in paths:
+                for i in range(0, len(X), batch_size):
+                    batch_X = X[i:i + batch_size]
+                    batch_y = y[i:i + batch_size]
 
-            X, y = load_npz_file(path)
+                    if len(batch_X) > 0:
+                        yield batch_X, batch_y
 
-            idx = np.arange(len(X))
-            np.random.shuffle(idx)
-
-            X = X[idx]
-            y = y[idx]
-
-            for i in range(0, len(X), batch_size):
-                yield X[i:i + batch_size], y[i:i + batch_size]
+            except Exception as e:
+                print(f"⚠️ Validation error: {e}")
+                continue
 
 
 def count_samples(npz_paths):
     total = 0
+    seizure_count = 0
 
     for p in npz_paths:
-        total += len(np.load(p)['y'])
+        try:
+            data = np.load(p)
+            y = data['y']
+            total += len(y)
+            seizure_count += np.sum(y == 1)
+        except Exception as e:
+            print(f"⚠️ Error counting {p}: {e}")
+            continue
 
-    return total
+    return total, seizure_count
 
 
-def validation_generator(npz_paths):
-    for path in npz_paths:
-        X, y = load_npz_file(path)
+def focal_loss_fixed(alpha=0.70, gamma=2.5):
+    """
+    ✅ IMPROVED: Adjusted parameters
+    alpha=0.70 (less aggressive), gamma=2.5 (more focus on hard examples)
+    """
 
-        yield X, y
-
-
-def focal_loss(gamma=2., alpha=0.25):
     def loss(y_true, y_pred):
         y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
 
-        bce = tf.keras.backend.binary_crossentropy(y_true, y_pred)
-
+        bce = -(y_true * tf.math.log(y_pred) + (1 - y_true) * tf.math.log(1 - y_pred))
         p_t = y_true * y_pred + (1 - y_true) * (1 - y_pred)
+        focal_weight = tf.pow(1 - p_t, gamma)
+        alpha_t = y_true * alpha + (1 - y_true) * (1 - alpha)
 
-        focal = alpha * tf.pow(1 - p_t, gamma) * bce
-
+        focal = alpha_t * focal_weight * bce
         return tf.reduce_mean(focal)
 
     return loss
 
 
 def f1_score(y_true, y_pred):
-
     y_true = tf.cast(y_true, tf.float32)
     y_pred = tf.cast(tf.round(y_pred), tf.float32)
 
@@ -166,188 +212,205 @@ def f1_score(y_true, y_pred):
     return 2 * (precision * recall) / (precision + recall + 1e-7)
 
 
-def build_eeg_cnn(input_shape):
+def specificity(y_true, y_pred):
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(tf.round(y_pred), tf.float32)
+
+    tn = tf.reduce_sum((1 - y_true) * (1 - y_pred))
+    fp = tf.reduce_sum((1 - y_true) * y_pred)
+
+    return tn / (tn + fp + 1e-7)
+
+
+
+
+def build_improved_eeg_cnn(input_shape):
     inp = layers.Input(shape=input_shape)
 
-    # 1. Blok
-    x = layers.Conv1D(64, 7, padding='same')(inp)
+    # Block 1
+    x = layers.Conv1D(64, 7, padding='same', kernel_regularizer=l2(1e-4))(inp)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
+    x = layers.SpatialDropout1D(0.2)(x)
     x = layers.MaxPooling1D(2)(x)
 
-    # 2. Blok
-    x = layers.Conv1D(128, 5, padding='same')(x)
+    # Block 2
+    x = layers.Conv1D(128, 5, padding='same', kernel_regularizer=l2(1e-4))(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
+    x = layers.SpatialDropout1D(0.3)(x)
     x = layers.MaxPooling1D(2)(x)
 
-    # 3. Blok
-    x = layers.Conv1D(256, 3, padding='same')(x)
+    # Block 3
+    x = layers.Conv1D(256, 3, padding='same', kernel_regularizer=l2(1e-4))(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
-    x = layers.GlobalAveragePooling1D()(x)
+    x = layers.SpatialDropout1D(0.3)(x)
 
-    x = layers.Dense(128, activation='relu')(x)
+    # Attention
+    attention = layers.Conv1D(1, 1, activation='sigmoid')(x)
+    x = layers.Multiply()([x, attention])
+
+    # Pooling
+    avg_pool = layers.GlobalAveragePooling1D()(x)
+    max_pool = layers.GlobalMaxPooling1D()(x)
+    x = layers.Concatenate()([avg_pool, max_pool])
+
+    # Dense
+    x = layers.Dense(128, activation='relu', kernel_regularizer=l2(1e-4))(x)
     x = layers.Dropout(0.5)(x)
 
-    out = layers.Dense(1, activation='sigmoid')(x)  # Binary classification için doğru
+    out = layers.Dense(1, activation='sigmoid')(x)
 
     return models.Model(inp, out)
+
+
+model = build_improved_eeg_cnn((256, 18))
 
 
 def plot_training_history(history):
     hist = history.history
     epochs = range(1, len(hist['loss']) + 1)
 
-    # ---- LOSS ----
-    plt.figure()
-    plt.plot(epochs, hist['loss'], label='Train Loss')
-    plt.plot(epochs, hist['val_loss'], label='Val Loss')
-    plt.title("Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle('Training History', fontsize=16)
+
+    # Loss
+    axes[0, 0].plot(epochs, hist['loss'], label='Train')
+    axes[0, 0].plot(epochs, hist['val_loss'], label='Val')
+    axes[0, 0].set_title('Loss')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True)
+
+    # Accuracy
+    axes[0, 1].plot(epochs, hist['accuracy'], label='Train')
+    axes[0, 1].plot(epochs, hist['val_accuracy'], label='Val')
+    axes[0, 1].set_title('Accuracy')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True)
+
+    # AUC
+    axes[0, 2].plot(epochs, hist['auc'], label='Train')
+    axes[0, 2].plot(epochs, hist['val_auc'], label='Val')
+    axes[0, 2].set_title('AUC')
+    axes[0, 2].legend()
+    axes[0, 2].grid(True)
+
+    # Precision
+    axes[1, 0].plot(epochs, hist['precision'], label='Train')
+    axes[1, 0].plot(epochs, hist['val_precision'], label='Val')
+    axes[1, 0].set_title('Precision')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True)
+
+    # Recall
+    axes[1, 1].plot(epochs, hist['recall'], label='Train')
+    axes[1, 1].plot(epochs, hist['val_recall'], label='Val')
+    axes[1, 1].set_title('Recall (Sensitivity)')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True)
+
+    # F1
+    axes[1, 2].plot(epochs, hist['f1_score'], label='Train')
+    axes[1, 2].plot(epochs, hist['val_f1_score'], label='Val')
+    axes[1, 2].set_title('F1 Score')
+    axes[1, 2].legend()
+    axes[1, 2].grid(True)
+
+    plt.tight_layout()
     plt.show()
-
-    # ---- ACCURACY ----
-    plt.figure()
-    plt.plot(epochs, hist['accuracy'], label='Train Acc')
-    plt.plot(epochs, hist['val_accuracy'], label='Val Acc')
-    plt.title("Accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.legend()
-    plt.show()
-
-    # ---- AUC ----
-    plt.figure()
-    plt.plot(epochs, hist['auc'], label='Train AUC')
-    plt.plot(epochs, hist['val_auc'], label='Val AUC')
-    plt.title("AUC")
-    plt.xlabel("Epoch")
-    plt.ylabel("AUC")
-    plt.legend()
-    plt.show()
-
-    # ---- Precision ----
-    plt.figure()
-    plt.plot(epochs, hist['precision'], label='Train Precision')
-    plt.plot(epochs, hist['val_precision'], label='Val Precision')
-    plt.title("Precision")
-    plt.xlabel("Epoch")
-    plt.ylabel("Precision")
-    plt.legend()
-    plt.show()
-
-    # ---- Recall ----
-    plt.figure()
-    plt.plot(epochs, hist['recall'], label='Train Recall')
-    plt.plot(epochs, hist['val_recall'], label='Val Recall')
-    plt.title("Recall")
-    plt.xlabel("Epoch")
-    plt.ylabel("Recall")
-    plt.legend()
-    plt.show()
-
-    # ---- F1 ----
-    plt.figure()
-    plt.plot(epochs, hist['f1_score'], label='Train F1')
-    plt.plot(epochs, hist['val_f1_score'], label='Val F1')
-    plt.title("F1 Score")
-    plt.xlabel("Epoch")
-    plt.ylabel("F1")
-    plt.legend()
-    plt.show()
-
-
-def plot_all_metrics(history):
-    hist = history.history
-    epochs = range(1, len(hist['loss']) + 1)
-
-    plt.figure(figsize=(12, 8))
-
-    for key in hist.keys():
-        if not key.startswith("val_"):
-            plt.plot(epochs, hist[key], label=key)
-            if "val_" + key in hist:
-                plt.plot(epochs, hist["val_" + key], linestyle="--")
-
-    plt.legend()
-    plt.title("Training Metrics")
-    plt.show()
-
-
-#
-# npz = np.load('dataset_final/train/chb01/chb01_03_train.npz')
-# print(npz['X'].shape)
-# print(np.count_nonzero(npz['y']))
-#
-# npz = np.load('dataset_final/val/chb01/chb01_03_val.npz')
-# print(npz['X'].shape)
-# print(np.count_nonzero(npz['y']))
 
 
 if __name__ == '__main__':
-    train_paths = collect_npz_paths("dataset-dummy/train")
-    val_paths = collect_npz_paths("dataset-dummy/val")
+    # Load paths
+    train_paths = collect_npz_paths("dataset_final_gemini_v2/train")
+    val_paths = collect_npz_paths("dataset_final_gemini_v2/val")
 
-    print("Train file count:", len(train_paths))
-    print("Validation file count:", len(val_paths))
+    print("=" * 60)
+    print("DATASET STATISTICS")
+    print("=" * 60)
+    print(f"Train files: {len(train_paths)}")
+    print(f"Val files: {len(val_paths)}")
 
-    BATCH_SIZE = 64
+    if len(train_paths) == 0 or len(val_paths) == 0:
+        print("\n❌ ERROR: No data files found!")
+        exit(1)
+
+    total_train, seizure_train = count_samples(train_paths)
+    total_val, seizure_val = count_samples(val_paths)
+
+    if total_train == 0 or total_val == 0:
+        print("\n❌ ERROR: No samples loaded!")
+        exit(1)
+
+    print(f"\nTrain samples: {total_train:,}")
+    print(f"  - Seizure: {seizure_train:,} ({100 * seizure_train / total_train:.2f}%)")
+    print(f"  - Non-seizure: {total_train - seizure_train:,}")
+
+    print(f"\nVal samples: {total_val:,}")
+    print(f"  - Seizure: {seizure_val:,} ({100 * seizure_val / total_val:.2f}%)")
+    print(f"  - Non-seizure: {total_val - seizure_val:,}")
+    print("=" * 60)
+
+    BATCH_SIZE = 32
     BUFFER_SIZE = 4096
+    TARGET_RATIO = 0.15
 
-    train_gen = robust_batch_generator(train_paths, BATCH_SIZE, buffer_size=BUFFER_SIZE)
-    val_gen = robust_batch_generator(val_paths, BATCH_SIZE, buffer_size=BUFFER_SIZE)
-
-    total_train = count_samples(train_paths)
-    total_val = count_samples(val_paths)
+    train_gen = balanced_batch_generator(train_paths, BATCH_SIZE, BUFFER_SIZE, TARGET_RATIO)
+    val_gen = validation_generator(val_paths, BATCH_SIZE)
 
     steps_per_epoch = total_train // BATCH_SIZE
     val_steps = total_val // BATCH_SIZE
 
-    # X, y = next(train_gen)
-    # print(X.shape)
-    # print(y.shape)
-    # print("Train samples:", total_train)
-    # print("Validation samples:", total_val)
+    print(f"\nSteps per epoch: {steps_per_epoch}")
+    print(f"Validation steps: {val_steps}\n")
 
+    # Callbacks
     early_stop = EarlyStopping(
-        monitor='val_auc',
-        patience=8,
+        monitor='val_recall',  # Changed from val_auc
+        patience=15,  # Increased from 10
         mode='max',
-        restore_best_weights=True
+        restore_best_weights=True,
+        verbose=1
     )
 
     reduce_lr = ReduceLROnPlateau(
         monitor='val_loss',
-        factor=0.3,
-        patience=4,
-        min_lr=1e-6
+        factor=0.5,
+        patience=5,
+        min_lr=1e-7,
+        verbose=1
     )
 
     checkpoint = ModelCheckpoint(
-        "best_eeg_model.keras",
+        "best_eeg_seizure_model.keras",
         monitor='val_auc',
         mode='max',
-        save_best_only=True
+        save_best_only=True,
+        verbose=1
     )
+    # Build model
+    model = build_improved_eeg_cnn((256, 18))
 
-    model = build_eeg_cnn((256, 18))
-
+    # Compile
     model.compile(
-        optimizer='adam',
-        loss=focal_loss(),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),  # Lower LR
+        loss=focal_loss_fixed(alpha=0.70, gamma=2.5),  # Adjusted alpha
         metrics=[
             'accuracy',
             metrics.AUC(name='auc'),
             metrics.Precision(name='precision'),
             metrics.Recall(name='recall'),
+            specificity,
             f1_score
         ]
     )
-
     model.summary()
+
+    # Train
+    print("\n" + "=" * 60)
+    print("STARTING TRAINING")
+    print("=" * 60)
 
     history = model.fit(
         train_gen,
@@ -355,14 +418,17 @@ if __name__ == '__main__':
         validation_data=val_gen,
         validation_steps=val_steps,
         epochs=50,
-        callbacks=[
-            early_stop,
-            checkpoint,
-            reduce_lr
-        ]
+        callbacks=[early_stop, checkpoint, reduce_lr],
+        verbose=1
     )
 
-    print("*" * 60)
+    print("\n" + "=" * 60)
+    print("TRAINING COMPLETE")
+    print("=" * 60)
+
+    # Plot results
     plot_training_history(history)
-    print("*" * 60)
-    plot_all_metrics(history)
+
+    # Save final model
+    model.save("final_eeg_seizure_model.keras")
+    print("\n✅ Models saved successfully")
