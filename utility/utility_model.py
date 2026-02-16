@@ -77,22 +77,22 @@ def get_npz_index(dataset_root):
     return dict(index)
 
 
-# REPLACE entire loso_split() with:
 def loso_split(index_dict, test_subjects):
     if isinstance(test_subjects, str):
         test_subjects = [test_subjects]
+
     test_subjects = set(test_subjects)
 
-    train_files, val_files = [], []
+    train_files = []
+    val_files = []
+
     for subject, splits in index_dict.items():
+
         if subject in test_subjects:
-            # ✅ HOLD OUT ALL data from test subject
-            val_files.extend(splits.get("train", []))
             val_files.extend(splits.get("val", []))
         else:
-            # ✅ USE ALL data from training subjects
             train_files.extend(splits.get("train", []))
-            train_files.extend(splits.get("val", []))
+
     return train_files, val_files
 
 
@@ -100,7 +100,7 @@ def npz_file_generator(file_list):
     for f in file_list:
         data = np.load(f)
 
-        X = data["x"]
+        X = data["X"]
         y = data["y"]
 
         yield X, y
@@ -223,7 +223,7 @@ def build_tuned_model():
     return model
 
 
-def build_cnn_model(n_channels=18, n_samples=256):
+def build_cnn_model_v2(n_channels=18, n_samples=256):
     """Lightweight CNN with heavy regularization for small EEG datasets"""
     inputs = layers.Input(shape=(n_channels, n_samples))
     x = layers.Permute((2, 1))(inputs)  # (samples, channels) -> (time, channels)
@@ -265,4 +265,34 @@ def build_cnn_model(n_channels=18, n_samples=256):
             tf.keras.metrics.Recall(name='recall')
         ]
     )
+    return model
+
+
+def build_cnn_model(n_channels=18, n_samples=256, lr=0.001):
+    inputs = layers.Input(shape=(n_channels, n_samples))
+
+    x = layers.Permute((2, 1))(inputs)
+
+    x = layers.Conv1D(64, 7, padding="same", activation="relu")(x)
+    x = layers.MaxPool1D(2)(x)
+
+    x = layers.Conv1D(128, 5, padding="same", activation="relu")(x)
+    x = layers.MaxPool1D(2)(x)
+
+    x = layers.Conv1D(256, 3, padding="same", activation="relu")(x)
+    x = layers.GlobalAveragePooling1D()(x)
+
+    x = layers.Dense(128, activation="relu")(x)
+    x = layers.Dropout(0.5)(x)
+
+    outputs = layers.Dense(1, activation="sigmoid")(x)
+
+    model = models.Model(inputs, outputs)
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+        loss="binary_crossentropy",
+        metrics=["accuracy", tf.keras.metrics.AUC()]
+    )
+
     return model

@@ -1,5 +1,5 @@
 import mne.io
-from utility import model as yener
+from utility import utility_model as yener
 from utility import my_utils as deniz
 import matplotlib.pyplot as plt
 import tensorflow as tf

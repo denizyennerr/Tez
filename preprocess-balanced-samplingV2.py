@@ -1,9 +1,9 @@
 import os
 import gc
 import numpy as np
-import pandas as pd
 import mne
-import random
+from sklearn.utils import shuffle  # karıştırma için
+import pandas as pd
 import utility.my_utils as deniz
 
 dataset_path = 'data-understanding/data/chb-mit'
@@ -15,10 +15,9 @@ FINAL_CHANNELS = [
     'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2',
     'FP2-F8', 'F8-T8', 'T8-P8', 'P8-O2',
     'FZ-CZ', 'CZ-PZ'
-],
+]
 df = pd.read_csv('data-understanding/all_preprocess_pipeline_seizure.csv')
-seizure_file_list = ( df['file'].tolist())
-
+seizure_file_list = (df['file'].tolist())
 seizure_set = {f.strip() for f in seizure_file_list}
 
 # 2. edf_paths listesini filtreliyoruz
@@ -28,197 +27,124 @@ filtered_paths = [
 ]
 
 
-
-# Sonucu görmek için:
-print(f"Toplam dosya yolu: {len(edf_paths)}")
-print(f"Filtrelenmiş dosya yolu: {len(filtered_paths)}")
-
-
 def process_and_save_npz(
         edf_list,
         seizure_df,
         output_dir,
-        split="train",
+        final_channels,
+        split='train',
         epoch_length=2.0,
-        overlap=0.5,
+        overlap=0,
         preictal_exclude=30,
         postictal_exclude=30,
-        final_channels=deniz.TARGET_CHANNELS
 ):
-    """
-    Production grade preprocessing + balancing pipeline
-    """
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    step = epoch_length * (1 - overlap)
+    train_dir = os.path.join(output_dir, "train")
+    val_dir = os.path.join(output_dir, "val")
+    os.makedirs(train_dir, exist_ok=True) if split == "train" else os.makedirs(val_dir, exist_ok=True)
 
     for edf_path in edf_list:
-
         file_name = os.path.basename(edf_path)
         subject = file_name.split("_")[0]
-
-        print(f"\nProcessing: {file_name}")
+        print(f"\nProcessing: {file_name} [{split}]")
 
         try:
-            # ---------------------------
-            # 1. Channel Fix
-            # ---------------------------
+            # --- Standart Preprocess ---
             raw = deniz.fix_eeg_channels_version_2(edf_path, final_channels)
-            if raw is None:
-                continue
-
-            # ---------------------------
-            # 2. Downsample
-            # ---------------------------
+            if raw is None: continue
             raw = deniz.downsample_version2(raw)
-
-            # ---------------------------
-            # 3. Filtering
-            # ---------------------------
             raw = deniz.apply_filtering_version2(raw)
 
-            # ---------------------------
-            # 4. Annotation
-            # ---------------------------
-            annotations, _, _ = deniz.build_seizure_annotations_for_file_v2(
-                seizure_df,
-                file_name
-            )
+            annotations, _, _ = deniz.build_seizure_annotations_for_file_v2(seizure_df, file_name)
+            if annotations: raw.set_annotations(annotations)
 
-            if annotations is not None:
-                raw.set_annotations(annotations)
+            epochs = mne.make_fixed_length_epochs(raw, duration=epoch_length, overlap=overlap, preload=True,
+                                                  verbose=False)
 
-            # ---------------------------
-            # 5. Epoch
-            # ---------------------------
-            epochs = mne.make_fixed_length_epochs(
-                raw,
-                duration=epoch_length,
-                overlap=epoch_length - step,
-                preload=True,
-                verbose=False
-            )
-
-            # ---------------------------
-            # 6. Label
-            # ---------------------------
-            labels = deniz.generate_epoch_labels_version2(epochs, raw)
-            labels = np.array(labels)
-
+            # --- Yeni Etiketleme Mantığı ---
+            # Artık labels: 1 (Seizure), 0 (Safe), -1 (Exclude)
+            labels = deniz.generate_epoch_labels_v4(raw, epochs, epoch_length, pre_exclude=preictal_exclude,
+                                                    post_exclude=postictal_exclude)
             X = epochs.get_data()
 
-            # ---------------------------
-            # 7. Metadata (epoch start times)
-            # ---------------------------
-            sfreq = raw.info["sfreq"]
-            epoch_starts = epochs.events[:, 0] / sfreq
+            # Hem Train hem Val için: Yasaklı bölgeleri (-1) tamamen atıyoruz
+            valid_mask = (labels != -1)
+            X_clean = X[valid_mask]
+            y_clean = labels[valid_mask]
 
-            # ---------------------------
-            # 8. BALANCING (TRAIN ONLY)
-            # ---------------------------
+            if len(y_clean) == 0:
+                print(f"  ⚠️ Dosya tamamen exclude edildi: {file_name}")
+                continue
+
+            # --- Train / Val Karar Mekanizması ---
             if split == "train":
+                seizure_idx = np.where(y_clean == 1)[0]
+                safe_non_seizure_idx = np.where(y_clean == 0)[0]
+                n_seizure = len(seizure_idx)
 
-                seizure_idx = np.where(labels == 1)[0]
-                non_seizure_idx = np.where(labels == 0)[0]
+                if n_seizure > 0:
+                    # Nöbet varsa: 1:1 oranında güvenli non-seizure örnekle
+                    n_take = min(n_seizure, len(safe_non_seizure_idx))
+                    step = max(1, len(safe_non_seizure_idx) // n_take)
+                    sampled_non_idx = safe_non_seizure_idx[::step][:n_take]
 
-                # ---- pre/post ictal removal ----
-                safe_non_seizure = []
-
-                if raw.annotations is not None:
-
-                    seizure_intervals = [
-                        (onset, onset + dur)
-                        for onset, dur, desc
-                        in zip(raw.annotations.onset,
-                               raw.annotations.duration,
-                               raw.annotations.description)
-                        if desc == "seizure"
-                    ]
-
-                    for idx in non_seizure_idx:
-                        start = epoch_starts[idx]
-                        end = start + epoch_length
-
-                        safe = True
-
-                        for sz_start, sz_end in seizure_intervals:
-
-                            if not (
-                                    end <= sz_start - preictal_exclude or
-                                    start >= sz_end + postictal_exclude
-                            ):
-                                safe = False
-                                break
-
-                        if safe:
-                            safe_non_seizure.append(idx)
-
-                safe_non_seizure = np.array(safe_non_seizure)
-
-                # ---- sample equal amount ----
-                if len(seizure_idx) > 0 and len(safe_non_seizure) > 0:
-
-                    sampled_non_seizure = np.random.choice(
-                        safe_non_seizure,
-                        size=min(len(seizure_idx), len(safe_non_seizure)),
-                        replace=False
-                    )
-
-                    final_idx = np.concatenate([seizure_idx, sampled_non_seizure])
-
+                    final_idx = np.concatenate([seizure_idx, sampled_non_idx])
+                    X_final, y_final = X_clean[final_idx], y_clean[final_idx]
+                    X_final, y_final = shuffle(X_final, y_final, random_state=42)
                 else:
-                    final_idx = np.arange(len(labels))
+                    # Nöbet yoksa: Train setine binlerce non-seizure eklememek için
+                    # sabit (örneğin 50-100 adet) temsilci örnek al veya dosyayı geç.
+                    # Şimdilik örnek alıyoruz:
+                    n_dummy = min(50, len(safe_non_seizure_idx))
+                    step = max(1, len(safe_non_seizure_idx) // n_dummy)
+                    final_idx = safe_non_seizure_idx[::step][:n_dummy]
+                    X_final, y_final = X_clean[final_idx], y_clean[final_idx]
 
             else:
-                final_idx = np.arange(len(labels))
+                # Val setinde dengeleme yapma ama yasaklı bölgeleri (maske ile) temizlemiş olduk
+                X_final, y_final = X_clean, y_clean
 
-            # ---------------------------
-            # 9. Final selection
-            # ---------------------------
-            X_final = X[final_idx]
-            y_final = labels[final_idx]
-
-            # ---------------------------
-            # 10. SAVE
-            # ---------------------------
-            subject_dir = os.path.join(output_dir, subject)
+            # --- Kayıt ---
+            target_dir = train_dir if split == "train" else val_dir
+            subject_dir = os.path.join(target_dir, subject)
             os.makedirs(subject_dir, exist_ok=True)
 
-            save_name = file_name.replace(".edf", f"_{split}.npz")
+            save_path = os.path.join(subject_dir, file_name.replace(".edf", f"_{split}.npz"))
+            np.savez_compressed(save_path, X=X_final, y=y_final, subject=subject, file_name=file_name)
 
-            np.savez_compressed(
-                os.path.join(subject_dir, save_name),
-                x=X_final,
-                y=y_final
-            )
-
-            print(
-                f"Saved {save_name} | Shape: {X_final.shape} | "
-                f"Seizure ratio: {y_final.mean():.3f}"
-            )
-
-            # ---------------------------
-            # Memory cleanup
-            # ---------------------------
-            del raw, epochs, X, labels
+            print(f"  → Final shape: {X_final.shape} | Seizure ratio: {y_final.mean():.3f}")
+            del raw, epochs, X, X_clean, X_final;
             gc.collect()
 
         except Exception as e:
-            print(f"Error processing {file_name}: {e}")
+            print(f"❌ Error: {str(e)}")
 
 
 process_and_save_npz(
     edf_list=filtered_paths,
     seizure_df=df,
-    output_dir="dataset_v2/train",
-    split="train"
+    output_dir='dataset_final_gemini',
+    final_channels=FINAL_CHANNELS,
+    split='train',
+    epoch_length=2.0,
+    overlap=0,
+    preictal_exclude=30,  # saniye
+    postictal_exclude=30,  # saniye
 )
 
 process_and_save_npz(
     edf_list=filtered_paths,
     seizure_df=df,
-    output_dir="dataset_v2/val",
-    split="val"
+    output_dir='dataset_final_gemini',
+    final_channels=FINAL_CHANNELS,
+    split='val',
+    epoch_length=2.0,
+    overlap=0,
+    preictal_exclude=30,  # saniye
+    postictal_exclude=30,  # saniye
 )
+
+# import numpy as np
+# path = "dataset_final/train/chb02/chb02_16_train.npz"
+# npz = np.load(path)
+# npz['X']
+# np.count_nonzero(npz['y'])

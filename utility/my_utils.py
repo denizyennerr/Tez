@@ -1,4 +1,6 @@
 import gc
+import glob
+from collections import defaultdict
 
 import mne
 import numpy as np
@@ -14,7 +16,6 @@ import numpy as np
 import os
 import random
 
-
 TARGET_SFREQ = 128.0  # Hz
 SOURCE_SFREQ = 256.0  # Hz
 
@@ -27,6 +28,36 @@ def get_folder_names(folder_path: str):
         return (sorted(folders))
     except FileNotFoundError:
         return "Path not found, please check folder_path"
+
+
+def get_npz_index(dataset_root):
+    """
+    Dataset altındaki train ve val klasörlerini tarayarak subject bazlı bir indeks oluşturur.
+    Yapı: dataset_root/{train|val}/{subject}/*.npz
+    """
+    index = defaultdict(lambda: {"train": [], "val": []})
+
+    def fill_index(split_name):
+        split_path = os.path.join(dataset_root, split_name)
+
+        if not os.path.exists(split_path):
+            print(f"Uyarı: {split_path} dizini bulunamadı.")
+            return
+
+        # Subject klasörlerini al (chb01, chb02 vb.)
+        subjects = [s for s in os.listdir(split_path) if os.path.isdir(os.path.join(split_path, s))]
+
+        for subject in subjects:
+            subject_path = os.path.join(split_path, subject)
+            # .npz uzantılı tüm dosyaların tam yolunu bul
+            files = glob.glob(os.path.join(subject_path, "*.npz"))
+            index[subject][split_name].extend(sorted(files))
+
+    # Hem train hem val için işlemi çalıştır
+    fill_index("train")
+    fill_index("val")
+
+    return dict(index)
 
 
 def get_edf_paths(dataset_path, subject_folders):
@@ -594,7 +625,6 @@ def apply_filtering_version2(raw):
         verbose='error'
     )
 
-
     # Notch filter at 60 Hz
     raw_filtered.notch_filter(
         freqs=60.0,
@@ -603,6 +633,7 @@ def apply_filtering_version2(raw):
     )
 
     return raw_filtered
+
 
 def apply_filtering(raw):
     """
@@ -649,6 +680,7 @@ def downsample_version2(raw, TARGET_SFREQ=128.0):
     raw_resampled = raw.copy().resample(TARGET_SFREQ, npad='auto', verbose='error')
     return raw_resampled
 
+
 def downsample(raw, TARGET_SFREQ=128.0):
     """
     Downsample from 256 Hz to 128 Hz.
@@ -683,6 +715,7 @@ def save_single_processed_edf(raw_obj, output_folder):
     except Exception as e:
         print(f"❌ Kayıt hatası ({filename}): {e}")
 
+
 def save_processed_edfs(processed_raw_list, output_folder="processed_files"):
     """
     processed_raw listesindeki objeleri belirtilen klasöre .edf olarak kaydeder.
@@ -708,6 +741,8 @@ def save_processed_edfs(processed_raw_list, output_folder="processed_files"):
             print(f"Başarıyla kaydedildi: {save_path}")
         except Exception as e:
             print(f"Hata oluştu ({filename}): {e}")
+
+
 ####################################################################
 
 def build_seizure_annotations_for_file_v2(df, file_name):
@@ -749,7 +784,6 @@ def build_seizure_annotations_for_file_v2(df, file_name):
     return annotations, durations, descriptions
 
 
-
 def build_seizure_annotations_for_file(df, file_name):
     """
     Belirli bir dosya adı için dataframe içindeki tüm seizure aralıklarını bulur
@@ -785,6 +819,144 @@ def build_seizure_annotations_for_file(df, file_name):
     )
 
     return annotations, durations, descriptions
+
+
+def generate_epoch_labels_v4(raw, epochs, epoch_duration=2.0, pre_exclude=30.0, post_exclude=30.0):
+    sfreq = raw.info['sfreq']
+    labels = []
+
+    # Nöbet aralıklarını çek (Sadece "seizure" olanlar)
+    seizure_intervals = []
+    if raw.annotations:
+        seizure_intervals = [
+            (onset, onset + duration)
+            for onset, duration, desc in
+            zip(raw.annotations.onset, raw.annotations.duration, raw.annotations.description)
+            if "seizure" in desc.lower()
+        ]
+
+    for event in epochs.events:
+        t_start = event[0] / sfreq
+        t_end = t_start + epoch_duration
+
+        current_label = 0  # Varsayılan: Güvenli Alan
+
+        for s_start, s_end in seizure_intervals:
+            # 1. Nöbet içi mi?
+            if t_start < s_end and t_end > s_start:
+                current_label = 1
+                break
+
+            # 2. Yasaklı bölge (Pre-ictal veya Post-ictal) mi?
+            pre_zone = (s_start - pre_exclude, s_start)
+            post_zone = (s_end, s_end + post_exclude)
+
+            if (t_start < pre_zone[1] and t_end > pre_zone[0]) or \
+                    (t_start < post_zone[1] and t_end > post_zone[0]):
+                current_label = -1
+                # break demiyoruz, çünkü belki başka bir nöbetle tam çakışıyordur (1 öncelikli)
+
+        labels.append(current_label)
+
+    return np.array(labels, dtype=np.int8)
+
+
+
+def generate_epoch_labels_version3(raw, epochs, epoch_duration=2.0):
+    """
+        Verilen raw ve epochs objesi için
+        seizure overlap kontrolü yaparak
+        her epoch için 0/1 label üretir.
+
+        Parameters
+        ----------
+        raw : mne.io.Raw
+            Annotations içeren raw veri
+        epochs : mne.Epochs
+            Fixed length oluşturulmuş epoch objesi
+        epoch_duration : float
+            Epoch süresi (saniye)
+
+        Returns
+        -------
+        labels : np.ndarray
+            Shape: (n_epochs,)
+            0 = non-seizure
+            1 = seizure
+        """
+
+    sfreq = raw.info['sfreq']
+    events = epochs.events
+    labels = []
+
+    for event in events:
+        start_sample = event[0]
+        start_time = start_sample / sfreq
+        end_time = start_time + epoch_duration
+
+        label = 0
+
+        for onset, duration in zip(raw.annotations.onset,
+                                   raw.annotations.duration):
+
+            ann_start = onset
+            ann_end = onset + duration
+
+            if start_time < ann_end and end_time > ann_start:
+                label = 1
+                break
+
+        labels.append(label)
+
+    return np.array(labels)
+
+
+def create_label_mask(raw, annotations, pre_exclude=30, post_exclude=30):
+    """
+    Raw data uzunluğunda bir maske dizisi oluşturur.
+    0: Safe, 1: Seizure, -1: Exclude (Pre/Post)
+    """
+    n_samples = raw.n_times
+    sfreq = raw.info['sfreq']
+
+    # Varsayılan hepsi 0 (Safe)
+    mask = np.zeros(n_samples, dtype=np.int8)
+
+    # Anotasyon yoksa direkt dön
+    if annotations is None:
+        return mask
+
+    # MNE Annotations içindeki zamanları sample index'e çevir
+    # raw.time_as_index kullanımı en güvenli yoldur
+    for annot in annotations:
+        desc = annot['description']
+        onset = annot['onset']
+        duration = annot['duration']
+
+        # Sadece seizure olanlara odaklan
+        if 'seizure' in desc.lower():
+            # Seizure başlangıç/bitiş indexleri
+            s_start_idx = raw.time_as_index(onset)[0]
+            s_end_idx = raw.time_as_index(onset + duration)[0]
+
+            # Sınırları kontrol et
+            s_start_idx = max(0, s_start_idx)
+            s_end_idx = min(n_samples, s_end_idx)
+
+            # 1. Seizure bölgesini işaretle (1)
+            mask[s_start_idx:s_end_idx] = 1
+
+            # 2. Pre-ictal (Öncesi) bölgesini işaretle (-1)
+            # Not: Zaten seizure (1) olan yeri ezmemek için kontrol edilebilir ama
+            # genelde pre-ictal seizure ile çakışmaz.
+            pre_start_idx = max(0, raw.time_as_index(onset - pre_exclude)[0])
+            mask[pre_start_idx:s_start_idx] = -1
+
+            # 3. Post-ictal (Sonrası) bölgesini işaretle (-1)
+            post_end_idx = min(n_samples, raw.time_as_index(onset + duration + post_exclude)[0])
+            mask[s_end_idx:post_end_idx] = -1
+
+    return mask
 
 
 def generate_epoch_labels_version2(epochs, raw, overlap_threshold=0.5):
@@ -858,6 +1030,8 @@ def generate_epoch_labels_version2(epochs, raw, overlap_threshold=0.5):
         labels.append(label)
 
     return labels
+
+
 def generate_epoch_labels(epochs, raw):
     """
     Epoch'ların seizure içerip içermediğini belirleyen label listesi üretir.
@@ -895,6 +1069,7 @@ def generate_epoch_labels(epochs, raw):
         labels.append(label)
 
     return labels
+
 
 ##################
 import os
@@ -962,6 +1137,7 @@ def process_to_temp_files(list_preprocessed, df, temp_dir="temp_npy", epoch_leng
             print(f"❌ Hata: {file_name} -> {str(e)}")
 
     return processed_files
+
 
 ################ Verify processed
 import numpy as np
