@@ -31,108 +31,40 @@ def load_npz_file(path):
         return np.array([]), np.array([])
 
 
-def balanced_batch_generator(npz_paths, batch_size=32, buffer_size=4000, target_ratio=0.15):
+def natural_batch_generator(npz_paths, batch_size=32, shuffle_data=True):
     """
-    ✅ FIXED: Handles files with insufficient samples
+    ✅ NEW: Preserves natural class distribution in batches
+    No artificial balancing - matches validation distribution
     """
-    paths = npz_paths.copy()
-
-    buffer_seizure_X = []
-    buffer_seizure_y = []
-    buffer_safe_X = []
-    buffer_safe_y = []
-
     while True:
-        random.shuffle(paths)
+        paths = npz_paths.copy()
+        if shuffle_data:
+            random.shuffle(paths)
 
         for path in paths:
             try:
-                X_file, y_file = load_npz_file(path)
+                X, y = load_npz_file(path)
 
-                if len(X_file) == 0:
+                if len(X) == 0:
                     continue
 
-                seizure_mask = (y_file == 1)
-                safe_mask = (y_file == 0)
+                # Shuffle within file
+                if shuffle_data:
+                    indices = np.arange(len(X))
+                    np.random.shuffle(indices)
+                    X = X[indices]
+                    y = y[indices]
 
-                if np.any(seizure_mask):
-                    buffer_seizure_X.append(X_file[seizure_mask])
-                    buffer_seizure_y.append(y_file[seizure_mask])
+                # Yield sequential batches
+                for i in range(0, len(X), batch_size):
+                    batch_X = X[i:i + batch_size]
+                    batch_y = y[i:i + batch_size]
 
-                if np.any(safe_mask):
-                    buffer_safe_X.append(X_file[safe_mask])
-                    buffer_safe_y.append(y_file[safe_mask])
-
-                if len(buffer_seizure_X) > 0 and len(buffer_safe_X) > 0:
-                    seizure_X = np.concatenate(buffer_seizure_X, axis=0)
-                    seizure_y = np.concatenate(buffer_seizure_y, axis=0)
-                    safe_X = np.concatenate(buffer_safe_X, axis=0)
-                    safe_y = np.concatenate(buffer_safe_y, axis=0)
-
-                    # Limit buffer size
-                    if len(seizure_X) > buffer_size // 4:
-                        seizure_X = seizure_X[-buffer_size // 4:]
-                        seizure_y = seizure_y[-buffer_size // 4:]
-                    if len(safe_X) > buffer_size:
-                        safe_X = safe_X[-buffer_size:]
-                        safe_y = safe_y[-buffer_size:]
-
-                    # ✅ FIX: Dynamic batch composition based on available samples
-                    while len(seizure_X) > 0 and len(safe_X) > 0:
-                        # Calculate ideal counts
-                        n_seizure_ideal = int(batch_size * target_ratio)
-                        n_safe_ideal = batch_size - n_seizure_ideal
-
-                        # ✅ CRITICAL: Limit to available samples
-                        n_seizure = min(n_seizure_ideal, len(seizure_X))
-                        n_safe = min(n_safe_ideal, len(safe_X))
-
-                        # Ensure batch is full-sized (if not enough seizure, take more safe)
-                        if n_seizure + n_safe < batch_size:
-                            if len(safe_X) >= (batch_size - n_seizure):
-                                n_safe = batch_size - n_seizure
-                            elif len(seizure_X) >= (batch_size - n_safe):
-                                n_seizure = batch_size - n_safe
-                            else:
-                                # Not enough data for a full batch, break and load more
-                                break
-
-                        # ✅ Sample with available data
-                        if n_seizure > 0 and n_safe > 0:
-                            seizure_idx = np.random.choice(len(seizure_X), n_seizure, replace=False)
-                            safe_idx = np.random.choice(len(safe_X), n_safe, replace=False)
-
-                            batch_X = np.concatenate([
-                                seizure_X[seizure_idx],
-                                safe_X[safe_idx]
-                            ], axis=0)
-                            batch_y = np.concatenate([
-                                seizure_y[seizure_idx],
-                                safe_y[safe_idx]
-                            ], axis=0)
-
-                            # Shuffle within batch
-                            idx = np.arange(len(batch_X))
-                            np.random.shuffle(idx)
-
-                            yield batch_X[idx], batch_y[idx]
-
-                            # Remove used samples
-                            seizure_X = np.delete(seizure_X, seizure_idx, axis=0)
-                            seizure_y = np.delete(seizure_y, seizure_idx, axis=0)
-                            safe_X = np.delete(safe_X, safe_idx, axis=0)
-                            safe_y = np.delete(safe_y, safe_idx, axis=0)
-                        else:
-                            break
-
-                    # Update buffers
-                    buffer_seizure_X = [seizure_X] if len(seizure_X) > 0 else []
-                    buffer_seizure_y = [seizure_y] if len(seizure_y) > 0 else []
-                    buffer_safe_X = [safe_X] if len(safe_X) > 0 else []
-                    buffer_safe_y = [safe_y] if len(safe_y) > 0 else []
+                    if len(batch_X) > 0:
+                        yield batch_X, batch_y
 
             except Exception as e:
-                print(f"⚠️ Error loading {path}: {e}")
+                print(f"⚠️ Error: {e}")
                 continue
 
 
@@ -222,6 +154,28 @@ def specificity(y_true, y_pred):
     return tn / (tn + fp + 1e-7)
 
 
+def weighted_binary_crossentropy(weight_for_1):
+    """
+    Custom weighted BCE loss that works with generators
+
+    Args:
+        weight_for_1: Weight multiplier for positive class (seizures)
+    """
+
+    def loss(y_true, y_pred):
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
+
+        # Standard BCE
+        bce = -(y_true * tf.math.log(y_pred) + (1 - y_true) * tf.math.log(1 - y_pred))
+
+        # Apply weights
+        weights = y_true * weight_for_1 + (1 - y_true) * 1.0
+        weighted_bce = bce * weights
+
+        return tf.reduce_mean(weighted_bce)
+
+    return loss
 
 
 def build_improved_eeg_cnn(input_shape):
@@ -321,10 +275,12 @@ def plot_training_history(history):
     plt.show()
 
 
+# ...existing imports...
+
 if __name__ == '__main__':
     # Load paths
-    train_paths = collect_npz_paths("dataset_final_gemini_v2/train")
-    val_paths = collect_npz_paths("dataset_final_gemini_v2/val")
+    train_paths = collect_npz_paths("dataset_final_gemini_v3/train")
+    val_paths = collect_npz_paths("dataset_final_gemini_v3/val")
 
     print("=" * 60)
     print("DATASET STATISTICS")
@@ -353,11 +309,19 @@ if __name__ == '__main__':
     print("=" * 60)
 
     BATCH_SIZE = 32
-    BUFFER_SIZE = 4096
-    TARGET_RATIO = 0.15
 
-    train_gen = balanced_batch_generator(train_paths, BATCH_SIZE, BUFFER_SIZE, TARGET_RATIO)
-    val_gen = validation_generator(val_paths, BATCH_SIZE)
+    # ✅ FIX: Calculate class weights based on VALIDATION distribution (not training)
+    val_seizure_ratio = seizure_val / total_val
+    weight_for_seizure = (1.0 - val_seizure_ratio) / val_seizure_ratio
+
+    print(f"\n📊 Loss Weights:")
+    print(f"  Non-seizure (0): 1.0")
+    print(f"  Seizure (1):     {weight_for_seizure:.2f}")
+    print(f"  Ratio (1:0):     {weight_for_seizure:.2f}:1\n")
+
+    # ✅ FIX: Corrected generator calls
+    train_gen = natural_batch_generator(train_paths, batch_size=BATCH_SIZE, shuffle_data=True)
+    val_gen = validation_generator(val_paths, batch_size=BATCH_SIZE)
 
     steps_per_epoch = total_train // BATCH_SIZE
     val_steps = total_val // BATCH_SIZE
@@ -367,8 +331,8 @@ if __name__ == '__main__':
 
     # Callbacks
     early_stop = EarlyStopping(
-        monitor='val_recall',  # Changed from val_auc
-        patience=15,  # Increased from 10
+        monitor='val_f1_score',
+        patience=20,
         mode='max',
         restore_best_weights=True,
         verbose=1
@@ -377,25 +341,26 @@ if __name__ == '__main__':
     reduce_lr = ReduceLROnPlateau(
         monitor='val_loss',
         factor=0.5,
-        patience=5,
+        patience=7,
         min_lr=1e-7,
         verbose=1
     )
 
     checkpoint = ModelCheckpoint(
         "best_eeg_seizure_model.keras",
-        monitor='val_auc',
+        monitor='val_f1_score',
         mode='max',
         save_best_only=True,
         verbose=1
     )
+
     # Build model
     model = build_improved_eeg_cnn((256, 18))
 
-    # Compile
+    # ✅ FIX: Compile with correct loss
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),  # Lower LR
-        loss=focal_loss_fixed(alpha=0.70, gamma=2.5),  # Adjusted alpha
+        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),
+        loss=weighted_binary_crossentropy(weight_for_seizure),  # ← Custom weighted loss
         metrics=[
             'accuracy',
             metrics.AUC(name='auc'),
@@ -405,6 +370,7 @@ if __name__ == '__main__':
             f1_score
         ]
     )
+
     model.summary()
 
     # Train
@@ -425,6 +391,61 @@ if __name__ == '__main__':
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
     print("=" * 60)
+
+    # ✅ NEW: Full validation evaluation
+    print("\n🔍 Evaluating on complete validation set...")
+
+    # Collect all validation data
+    X_val_list = []
+    y_val_list = []
+
+    for path in val_paths:
+        try:
+            X, y = load_npz_file(path)
+            if len(X) > 0:
+                X_val_list.append(X)
+                y_val_list.append(y)
+        except Exception as e:
+            print(f"⚠️ Error loading {path}: {e}")
+            continue
+
+    if X_val_list:
+        X_val_full = np.concatenate(X_val_list, axis=0)
+        y_val_full = np.concatenate(y_val_list, axis=0)
+
+        # Predict
+        print(f"\nPredicting on {len(y_val_full):,} validation samples...")
+        y_pred_probs = model.predict(X_val_full, batch_size=64, verbose=1)
+        y_pred = (y_pred_probs > 0.5).astype(int).flatten()
+
+        # Metrics
+        from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+
+        print("\n" + "=" * 60)
+        print("FINAL VALIDATION REPORT")
+        print("=" * 60)
+        print(classification_report(y_val_full, y_pred,
+                                    target_names=['Non-Seizure', 'Seizure'],
+                                    digits=4))
+
+        print(f"\nROC-AUC: {roc_auc_score(y_val_full, y_pred_probs):.4f}")
+
+        cm = confusion_matrix(y_val_full, y_pred)
+        print(f"\nConfusion Matrix:")
+        print(f"{'':15} {'Pred Non-Sz':>12} {'Pred Sz':>12}")
+        print(f"{'True Non-Sz':<15} {cm[0, 0]:>12,} {cm[0, 1]:>12,}")
+        print(f"{'True Sz':<15} {cm[1, 0]:>12,} {cm[1, 1]:>12,}")
+
+        tn, fp, fn, tp = cm.ravel()
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+        specificity_val = tn / (tn + fp) if (tn + fp) > 0 else 0
+
+        print(f"\n📊 Key Metrics:")
+        print(f"  Sensitivity (Recall): {sensitivity:.4f}")
+        print(f"  Specificity:          {specificity_val:.4f}")
+        print(f"  True Positives:       {tp:,}")
+        print(f"  False Negatives:      {fn:,} (missed seizures)")
+        print(f"  False Positives:      {fp:,}")
 
     # Plot results
     plot_training_history(history)

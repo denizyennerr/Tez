@@ -46,6 +46,8 @@ print(f"Train files: {len(train_paths)}")
 print(f"Val files: {len(val_paths)}")
 
 
+# ...existing imports and setup...
+
 def process_and_save_corrected(
         edf_list,
         seizure_df,
@@ -95,10 +97,10 @@ def process_and_save_corrected(
             )
             X = epochs.get_data(copy=True)
 
-            # ✅ IMPROVED: Stricter epoch labeling
+            # Stricter epoch labeling
             y_epoch_list = []
             n_samples_per_epoch = X.shape[2]
-            seizure_threshold = 0.5  # 50% of epoch must be seizure
+            seizure_threshold = 0.5
 
             for event in epochs.events:
                 start_samp = event[0]
@@ -108,13 +110,12 @@ def process_and_save_corrected(
                 n_seizure = np.sum(mask_chunk == 1)
                 n_exclude = np.sum(mask_chunk == -1)
 
-                # Stricter voting logic
                 if n_seizure >= (n_samples_per_epoch * seizure_threshold):
-                    label = 1  # Majority is seizure
+                    label = 1
                 elif n_exclude > (n_samples_per_epoch * 0.3):
-                    label = -1  # Too contaminated
+                    label = -1
                 else:
-                    label = 0  # Safe
+                    label = 0
 
                 y_epoch_list.append(label)
 
@@ -129,24 +130,28 @@ def process_and_save_corrected(
                 print(f"  ⚠️ No valid data: {file_name}")
                 continue
 
-            # ✅ IMPROVED: Different strategies for train/val
+            seizure_idx = np.where(y_clean == 1)[0]
+            safe_idx = np.where(y_clean == 0)[0]
+
+            # ✅ CRITICAL FIX: Match training to validation distribution
             if split == "train":
-                seizure_idx = np.where(y_clean == 1)[0]
-                safe_idx = np.where(y_clean == 0)[0]
-
                 if len(seizure_idx) > 0:
-                    # Keep ALL seizures + balanced non-seizures
+                    # Target: 1.5-2% seizure prevalence (same as validation)
                     n_seizure = len(seizure_idx)
-                    n_take = min(len(safe_idx), n_seizure * 5)  # 5:1 ratio
+                    target_prevalence = 0.015  # ✅ Match validation's 1.5%
 
-                    if n_take > 0:
-                        safe_chosen = np.random.choice(safe_idx, size=n_take, replace=False)
+                    # Calculate required non-seizures
+                    n_safe_needed = int(n_seizure * (1 - target_prevalence) / target_prevalence)
+                    n_safe_needed = min(n_safe_needed, len(safe_idx))
+
+                    if n_safe_needed > 0:
+                        safe_chosen = np.random.choice(safe_idx, size=n_safe_needed, replace=False)
                         final_idx = np.concatenate([seizure_idx, safe_chosen])
                         X_final, y_final = shuffle(X_clean[final_idx], y_clean[final_idx], random_state=42)
                     else:
                         X_final, y_final = X_clean[seizure_idx], y_clean[seizure_idx]
                 else:
-                    # Non-seizure file: take sample
+                    # Non-seizure file: take representative sample
                     n_take = min(300, len(safe_idx))
                     if n_take > 0:
                         chosen_idx = np.random.choice(safe_idx, size=n_take, replace=False)
@@ -155,7 +160,7 @@ def process_and_save_corrected(
                         print(f"  ⚠️ No data: {file_name}")
                         continue
             else:
-                # Validation: Keep ALL data (real-world distribution)
+                # Validation: Keep ALL data (natural distribution)
                 X_final, y_final = X_clean, y_clean
 
             # Save
@@ -167,7 +172,7 @@ def process_and_save_corrected(
 
             seizure_count = np.sum(y_final == 1)
             print(
-                f"  → Saved: {X_final.shape}, Seizures: {seizure_count}/{len(y_final)} ({100 * seizure_count / len(y_final):.1f}%)")
+                f"  → Saved: {X_final.shape}, Seizures: {seizure_count}/{len(y_final)} ({100 * seizure_count / len(y_final):.2f}%)")
 
             del raw, epochs, X, label_mask
             gc.collect()
@@ -178,11 +183,11 @@ def process_and_save_corrected(
             traceback.print_exc()
 
 
-# ✅ Process with proper splits
+# Run preprocessing
 process_and_save_corrected(
     edf_list=train_paths,
     seizure_df=df,
-    output_dir='dataset_final_gemini_v2',
+    output_dir='dataset_final_gemini_v3',
     final_channels=FINAL_CHANNELS,
     split='train',
     epoch_length=2.0,
@@ -194,7 +199,7 @@ process_and_save_corrected(
 process_and_save_corrected(
     edf_list=val_paths,
     seizure_df=df,
-    output_dir='dataset_final_gemini_v2',
+    output_dir='dataset_final_gemini_v3',
     final_channels=FINAL_CHANNELS,
     split='val',
     epoch_length=2.0,
