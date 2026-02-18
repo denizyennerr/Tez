@@ -1,8 +1,82 @@
 import glob
 import re
+from collections import defaultdict
+
 import pyedflib
 import numpy as np
 import os
+
+
+def get_folder_names(folder_path: str):
+    """ Returns a list of all files in folder_path"""
+    try:
+        folders = [f for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
+        return (sorted(folders))
+    except FileNotFoundError:
+        return "Path not found, please check folder_path"
+
+
+def get_edf_paths(dataset_path, subject_folders):
+    """
+    Gets all the .edf files under certain directory.
+    Belirli klasörler altındaki tüm .edf dosyalarının tam yollarını liste olarak döner.
+    subject_folders: Tek bir string (klasör adı) veya klasör adlarından oluşan bir liste olabilir.
+    Example:
+    all_edf_files = get_edf_paths(dataset_path, every_subject_folder)
+    chb01_files = get_edf_paths(dataset_path, every_subject_folder[0])
+    """
+    edf_paths = []
+
+    # If only one directory is used (string), convert it to list
+    if isinstance(subject_folders, str):
+        subject_folders = [subject_folders]
+
+    for folder in subject_folders:
+        folder_full_path = os.path.join(dataset_path, folder)
+
+        # Check whether path exists
+        if os.path.exists(folder_full_path):
+            # Scan the files inside the path
+            for file in os.listdir(folder_full_path):
+                if file.endswith(".edf"):
+                    # Create the full file path and append it to all edf paths
+                    full_file_path = os.path.join(folder_full_path, file)
+                    edf_paths.append(full_file_path)
+        else:
+            print(f"Uyarı: {folder_full_path} dizini bulunamadı.")
+
+    return sorted(edf_paths)
+
+
+def get_npz_index(dataset_root):
+    """
+    Dataset altındaki train ve val klasörlerini tarayarak subject bazlı bir indeks oluşturur.
+    Yapı: dataset_root/{train|val}/{subject}/*.npz
+    """
+    index = defaultdict(lambda: {"train": [], "val": []})
+
+    def fill_index(split_name):
+        split_path = os.path.join(dataset_root, split_name)
+
+        if not os.path.exists(split_path):
+            print(f"Uyarı: {split_path} dizini bulunamadı.")
+            return
+
+        # Subject klasörlerini al (chb01, chb02 vb.)
+        subjects = [s for s in os.listdir(split_path) if os.path.isdir(os.path.join(split_path, s))]
+
+        for subject in subjects:
+            subject_path = os.path.join(split_path, subject)
+            # .npz uzantılı tüm dosyaların tam yolunu bul
+            files = glob.glob(os.path.join(subject_path, "*.npz"))
+            index[subject][split_name].extend(sorted(files))
+
+    # Hem train hem val için işlemi çalıştır
+    fill_index("train")
+    fill_index("val")
+
+    return dict(index)
+
 
 def parse_summary_file(summary_path):
     """
