@@ -3,6 +3,7 @@ import handy.my_utils as deniz
 from EEGPreprocessor import EEGPreprocessor
 import os
 import gc
+import pandas as pd
 
 CHB_MIT_PATH = 'data-understanding/data/chb-mit'
 preprocessor = EEGPreprocessor(sampling_rate=256, target_sfreq=128)
@@ -15,7 +16,38 @@ patient_dirs = sorted([d for d in os.listdir(CHB_MIT_PATH)
 total_seizures = 0
 total_files_with_seizures = 0
 
+# Configuration
+WINDOW_SIZE = 2  # seconds
+OVERLAP = 0.5  # 50% overlap
+WINDOW_SAMPLES = WINDOW_SIZE * new_fs  # 2 * 128 = 256 samples
+STEP_SAMPLES = int(WINDOW_SAMPLES * (1 - OVERLAP))
+
+NPZ_OUTPUT_DIR = "processed_npz_files_2s"
+os.makedirs(NPZ_OUTPUT_DIR, exist_ok=True)
+
+data_frame_name = 'final_dataset_all_patients_2s.csv'
+
+PATIENTS_TO_USE = ['chb01', 'chb02', 'chb03',
+                   'chb04', 'chb05', 'chb06',
+                   'chb07', 'chb08', 'chb09',
+                   'chb10', 'chb11', 'chb12',
+                   'chb13', 'chb14', 'chb15',
+                   'chb16', 'chb17', 'chb18',
+                   'chb19', 'chb20', 'chb21',
+                   'chb22', 'chb23', 'chb24']
+
+FINAL_CHANNELS = [
+    'FP1-F7', 'F7-T7', 'T7-P7', 'P7-O1',
+    'FP1-F3', 'F3-C3', 'C3-P3', 'P3-O1',
+    'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2',
+    'FP2-F8', 'F8-T8', 'T8-P8', 'P8-O2',
+    'FZ-CZ', 'CZ-PZ'
+]
+
 print(f"\n👥 Processing {len(patient_dirs)} patients...\n")
+
+
+
 
 for patient in patient_dirs:
     patient_path = os.path.join(CHB_MIT_PATH, patient)
@@ -37,30 +69,32 @@ for patient in patient_dirs:
     else:
         print(f"   ✗ {patient}: No summary file")
 
+exclude_list = [
+    'chb12/chb12_29.edf',
+    'chb12/chb12_27.edf',
+    'chb12/chb12_28.edf'
+]
+
+# Sözlüğü güvenli bir şekilde güncellemek için iç içe döngü kullanıyoruz
+for item in exclude_list:
+    # item örneği: 'chb12/chb12_29.edf'
+    # folder: 'chb12', filename: 'chb12_29.edf'
+    folder, filename = item.split('/')
+
+    # Eğer bu klasör ana sözlükte varsa ve dosya o klasörün içindeyse sil
+    if folder in all_annotations and filename in all_annotations[folder]:
+        del all_annotations[folder][filename]
+
+# Sonucu doğrulamak için chb12 klasörüne bakalım
+print(all_annotations['chb12'].keys())
+
 # Fixed CHATGPT'den npzli olan
 # Storage
 all_seizure_windows = []
 all_normal_windows = []
 
-WINDOW_SIZE = 2  # seconds
-OVERLAP = 0.5  # 50% overlap
-WINDOW_SAMPLES = WINDOW_SIZE * new_fs  # 2 * 128 = 256 samples
-STEP_SAMPLES = int(WINDOW_SAMPLES * (1 - OVERLAP))
-
-# Configuration
-PATIENTS_TO_USE = ['chb01', 'chb03', 'chb06', 'chb10', 'chb14', 'chb15', 'chb16', 'chb24']
-
-FINAL_CHANNELS = [
-    'FP1-F7', 'F7-T7', 'T7-P7', 'P7-O1',
-    'FP1-F3', 'F3-C3', 'C3-P3', 'P3-O1',
-    'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2',
-    'FP2-F8', 'F8-T8', 'T8-P8', 'P8-O2',
-    'FZ-CZ', 'CZ-PZ'
-]
-
 # NEW → Per-file NPZ output folder
-NPZ_OUTPUT_DIR = "processed_npz_files"
-os.makedirs(NPZ_OUTPUT_DIR, exist_ok=True)
+
 
 print(f"\n👥 Processing {len(PATIENTS_TO_USE)} patients...")
 print("-" * 50)
@@ -252,4 +286,38 @@ print("\n" + "=" * 60)
 print("✅ Dataset ready!")
 print("=" * 60)
 
+# 1. Sözlüğü DataFrame'e çevir
+df_report = pd.DataFrame.from_dict(reporting_patients, orient='index').reset_index(drop=True)
 
+# 2. Toplam Satırı Ekle (Genel özeti görmek için)
+total_row = pd.DataFrame([{
+    'patient_id': 'TOTAL (Dataset)',
+    'seizure_windows': df_report['seizure_windows'].sum(),
+    'normal_windows': df_report['normal_windows'].sum(),
+    'total_windows': df_report['total_windows'].sum(),
+    'seizure_percentage': round((df_report['seizure_windows'].sum() / df_report['total_windows'].sum()) * 100, 2)
+}])
+
+df_final_report = pd.concat([df_report, total_row], ignore_index=True)
+
+# 3. Sonucu Görüntüle
+print("\n📊 Patient Data Summary Report:")
+print(df_final_report.to_string(index=False))
+df_final_report.to_csv(data_frame_name, index=False)
+
+######################
+
+#
+# import numpy as np
+#
+# data = np.load('processed_npz_files_base/chb15_chb15_15.npz')
+# X = data['X']
+# y = data['y']
+# X.shape
+# y.shape
+#
+# import os
+#
+# path = 'processed_npz_files_base'
+# npz_files1 = [f for f in os.listdir(path) if f.endswith('.npz')]
+# print(npz_files1)
