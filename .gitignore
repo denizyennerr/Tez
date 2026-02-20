@@ -1,2 +1,5 @@
 /data-understanding/data/
-
+.idea/
+*.npz
+__pycache__/
+*.pyc
