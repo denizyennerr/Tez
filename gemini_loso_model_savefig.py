@@ -13,7 +13,13 @@ from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
 
 dataset_path = 'master_dataset_2s.npz'
-log_dir = os.path.join("logs", "fit", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+log_dir = os.path.join("logs", "fit", timestamp)
+
+# --- NEW: Define and create output directories ---
+output_dir = os.path.join("saved_outputs", timestamp)
+plots_dir = os.path.join(output_dir, "plots")
+os.makedirs(plots_dir, exist_ok=True)
 
 
 # %% Model Definition
@@ -46,12 +52,12 @@ def build_seizure_model(input_shape):
 
 
 # %% Evaluation and Plotting Functions
-def plot_fold_diagnostics(history, y_test, y_pred_prob, current_subject):
-    """Generates a 2x2 dashboard of learning curves, CM, and ROC for DataSpell."""
+def plot_fold_diagnostics(history, y_test, y_pred_prob, current_subject, save_path):
+    """Generates a 2x2 dashboard, saves it to disk, and displays it in DataSpell."""
     y_pred = (y_pred_prob > 0.5).astype(int)
 
     fig, axs = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f'Performance Dashboard for Subject: {current_subject}', fontsize=16, fontweight='bold')
+    fig.suptitle(f'Performance Dashboard | Subject: {current_subject}', fontsize=16, fontweight='bold')
 
     # 1. Model Accuracy
     axs[0, 0].plot(history.history['accuracy'], label='Train Accuracy', color='#1f77b4', linewidth=2)
@@ -91,9 +97,14 @@ def plot_fold_diagnostics(history, y_test, y_pred_prob, current_subject):
     axs[1, 1].legend(loc="lower right")
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.92) # Ensure the suptitle doesn't overlap
-    plt.show()
+    plt.subplots_adjust(top=0.92)
 
+    # --- NEW: Save the figure before showing ---
+    # High DPI for crisp text, bbox_inches='tight' prevents cutoff labels
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"✅ Dashboard saved to: {save_path}")
+
+    plt.show() # Renders in DataSpell's SciView/Plots pane
 
 
 # %% Data Loading
@@ -161,14 +172,21 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
         'seizure_recall': report_dict['Seizure']['recall']
     })
 
-    # Visualizations (Dashboard including Loss/Acc)
-    plot_fold_diagnostics(history, y_test, y_pred_prob, current_test_subject)
+    # --- NEW: Define file path and pass to plotting function ---
+    save_filename = f"subject_{current_test_subject}_dashboard.png"
+    save_filepath = os.path.join(plots_dir, save_filename)
+    plot_fold_diagnostics(history, y_test, y_pred_prob, current_test_subject, save_filepath)
 
-    # break  # Uncomment to test just the first fold
 
 # %% Aggregate Results Summary
 summary_df = pd.DataFrame(all_reports)
 print("\n🏆 Overall LOSO Summary:")
 display(summary_df)
+
+# --- NEW: Save the final Pandas summary dataframe as a CSV ---
+summary_csv_path = os.path.join(output_dir, "overall_loso_summary.csv")
+summary_df.to_csv(summary_csv_path, index=False)
+print(f"✅ Overall summary saved to: {summary_csv_path}")
+
 print(f"Mean Accuracy: {summary_df['accuracy'].mean():.4f}")
 print(f"Mean Seizure Sensitivity (Recall): {summary_df['seizure_recall'].mean():.4f}")

@@ -17,15 +17,15 @@ total_seizures = 0
 total_files_with_seizures = 0
 
 # Configuration
-WINDOW_SIZE = 2  # seconds
+WINDOW_SIZE = 4  # seconds
 OVERLAP = 0.5  # 50% overlap
-WINDOW_SAMPLES = WINDOW_SIZE * new_fs  # 2 * 128 = 256 samples
+WINDOW_SAMPLES = WINDOW_SIZE * new_fs  # 4 * 128 = 256 samples
 STEP_SAMPLES = int(WINDOW_SAMPLES * (1 - OVERLAP))
 
-NPZ_OUTPUT_DIR = "processed_npz_files_2s"
+NPZ_OUTPUT_DIR = "processed_npz_files_4s"
 os.makedirs(NPZ_OUTPUT_DIR, exist_ok=True)
 
-data_frame_name = 'final_dataset_all_patients_2s.csv'
+data_frame_name = 'final_dataset_all_patients_4s.csv'
 
 PATIENTS_TO_USE = ['chb01', 'chb02', 'chb03',
                    'chb04', 'chb05', 'chb06',
