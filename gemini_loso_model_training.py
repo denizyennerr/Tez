@@ -24,16 +24,17 @@ def build_seizure_model(input_shape):
         layers.Conv1D(filters=32, kernel_size=3, activation='relu'),
         layers.BatchNormalization(),
         layers.MaxPooling1D(pool_size=2),
+        layers.Dropout(0.2),
         # Block 2
         layers.Conv1D(filters=64, kernel_size=3, activation='relu'),
         layers.BatchNormalization(),
         layers.MaxPooling1D(pool_size=2),
+        layers.Dropout(0.2),
         # Block 3
         layers.Conv1D(filters=128, kernel_size=3, activation='relu'),
         layers.GlobalAveragePooling1D(),
         # Classification Head
         layers.Dense(64, activation='relu'),
-        layers.Dropout(0.5),
         layers.Dense(1, activation='sigmoid')
     ])
 
