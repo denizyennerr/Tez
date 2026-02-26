@@ -10,7 +10,7 @@ from sklearn.metrics import confusion_matrix, classification_report, roc_curve, 
 from IPython.display import display
 
 # --- UPDATE THESE TO MATCH YOUR TRAINING RUN ---
-TIMESTAMP = "_25-02"
+TIMESTAMP = "20260225-151022"
 dataset_path = 'master_dataset_2s.npz'
 output_dir = os.path.join("saved_outputs", TIMESTAMP)
 models_dir = os.path.join(output_dir, "models")
