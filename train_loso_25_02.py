@@ -4,7 +4,7 @@ import datetime
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras import layers, models, Input
+from tensorflow.keras import layers, models, Input, regularizers
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, TensorBoard, ModelCheckpoint
 from sklearn.model_selection import LeaveOneGroupOut
 from tensorflow.keras.metrics import Recall, Precision, AUC
@@ -24,25 +24,39 @@ os.makedirs(histories_dir, exist_ok=True)
 
 
 # %% Model Definition
-def build_seizure_model(input_shape):
+def build_seizure_model(input_shape, output_bias=None):
+    if output_bias is not None:
+        output_bias = tf.keras.initializers.Constant(output_bias)
+
+    # L2 Regularizer
+    reg = regularizers.l2(0.001)
+
     model = models.Sequential([
         Input(shape=input_shape),
+        # Block 1: Capture low-level features
         layers.Conv1D(filters=32, kernel_size=3, activation='relu'),
         layers.BatchNormalization(),
         layers.MaxPooling1D(pool_size=2),
-        layers.Dropout(0.2),
+        layers.SpatialDropout1D(0.35),
+
+        # Block 2: Mid-level features
         layers.Conv1D(filters=64, kernel_size=3, activation='relu'),
         layers.BatchNormalization(),
         layers.MaxPooling1D(pool_size=2),
-        layers.Dropout(0.2),
+        layers.SpatialDropout1D(0.35),
+
+        # Block 3: High-level features
+        # layers.Dropout(0.5),  # Aggressive dropout before classifier
         layers.Conv1D(filters=128, kernel_size=3, activation='relu'),
         layers.GlobalAveragePooling1D(),
-        layers.Dense(64, activation='relu'),
-        layers.Dense(1, activation='sigmoid')
+        layers.Dense(64, activation='relu', kernel_regularizer=reg),
+        layers.Dense(1, activation='sigmoid', bias_initializer=output_bias)
     ])
 
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+
     model.compile(
-        optimizer='adam',
+        optimizer=optimizer,
         loss='binary_crossentropy',
         metrics=['accuracy', AUC(name='auc'), Recall(name='recall'), Precision(name='precision')]
     )
