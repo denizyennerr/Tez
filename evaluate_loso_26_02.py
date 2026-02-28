@@ -12,7 +12,7 @@ from sklearn.metrics import (confusion_matrix, classification_report,
 from IPython.display import display
 
 # --- UPDATE THESE TO MATCH YOUR TRAINING RUN ---
-TIMESTAMP = "20260225-151022"
+TIMESTAMP = "20260226-194555"
 dataset_path = 'master_dataset_2s.npz'
 output_dir = os.path.join("saved_outputs", TIMESTAMP)
 models_dir = os.path.join(output_dir, "models")
