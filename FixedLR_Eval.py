@@ -2,6 +2,8 @@
 import os
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
@@ -18,10 +20,11 @@ from sklearn.metrics import (
 )
 from IPython.display import display
 
-# --- UPDATE THESE TO MATCH YOUR TRAINING RUN ---
-TIMESTAMP = "20260303-162053"
-dataset_path = 'master_dataset_2s.npz'
-output_dir = os.path.join("Tez/saved_outputs", TIMESTAMP)
+BASE_DIR = r"P:\adam97\Tez"
+TIMESTAMP = "20260304-091718"
+
+dataset_path = os.path.join(BASE_DIR, 'master_dataset_4s.npz')
+output_dir = os.path.join(BASE_DIR, "saved_outputs", TIMESTAMP)
 
 models_dir = os.path.join(output_dir, "models")
 histories_dir = os.path.join(output_dir, "histories")
@@ -34,6 +37,7 @@ os.makedirs(plots_dir, exist_ok=True)
 # =============================================================================
 BATCH_SIZE = 128
 DECISION_THRESHOLD = 0.3
+
 
 # =============================================================================
 # %% Plotting Functions
@@ -71,7 +75,7 @@ def plot_average_training_history(avg_history_df, save_path):
     fig.suptitle("Average Training History Across All Subjects", fontsize=16, fontweight="bold")
 
     # Plot Accuracy
-    axs[0].plot(avg_history_df["accuracy"],     label="Train Accuracy",      color="#1f77b4", lw=2)
+    axs[0].plot(avg_history_df["accuracy"], label="Train Accuracy", color="#1f77b4", lw=2)
     axs[0].plot(avg_history_df["val_accuracy"], label="Validation Accuracy", color="#ff7f0e", lw=2)
     axs[0].set_title("Average Model Accuracy")
     axs[0].set_ylabel("Accuracy")
@@ -80,7 +84,7 @@ def plot_average_training_history(avg_history_df, save_path):
     axs[0].grid(True, linestyle="--", alpha=0.6)
 
     # Plot Loss
-    axs[1].plot(avg_history_df["loss"],     label="Train Loss",      color="#1f77b4", lw=2)
+    axs[1].plot(avg_history_df["loss"], label="Train Loss", color="#1f77b4", lw=2)
     axs[1].plot(avg_history_df["val_loss"], label="Validation Loss", color="#ff7f0e", lw=2)
     axs[1].set_title("Average Model Loss (Binary Cross-Entropy)")
     axs[1].set_ylabel("Loss")
@@ -93,12 +97,13 @@ def plot_average_training_history(avg_history_df, save_path):
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
 
+
 def plot_training_history(history_df, subject, save_path):
     """Training / validation accuracy and loss curves."""
     fig, axs = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle(f"Training History | Subject: {subject}", fontsize=16, fontweight="bold")
 
-    axs[0].plot(history_df["accuracy"],     label="Train",      color="#1f77b4", lw=2)
+    axs[0].plot(history_df["accuracy"], label="Train", color="#1f77b4", lw=2)
     axs[0].plot(history_df["val_accuracy"], label="Validation", color="#ff7f0e", lw=2)
     axs[0].set_title("Model Accuracy")
     axs[0].set_ylabel("Accuracy")
@@ -106,7 +111,7 @@ def plot_training_history(history_df, subject, save_path):
     axs[0].legend(loc="lower right")
     axs[0].grid(True, linestyle="--", alpha=0.6)
 
-    axs[1].plot(history_df["loss"],     label="Train",      color="#1f77b4", lw=2)
+    axs[1].plot(history_df["loss"], label="Train", color="#1f77b4", lw=2)
     axs[1].plot(history_df["val_loss"], label="Validation", color="#ff7f0e", lw=2)
     axs[1].set_title("Model Loss (Binary Cross-Entropy)")
     axs[1].set_ylabel("Loss")
@@ -128,11 +133,11 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
       3. Precision-Recall + AUPRC  (threshold-independent, PRIMARY metric)
       4. Probability Distribution  (visual sanity check)
     """
-    auroc      = roc_auc_score(y_test, y_pred_prob)
-    auprc      = average_precision_score(y_test, y_pred_prob)
-    fpr, tpr, _= roc_curve(y_test, y_pred_prob)
-    prec, rec, _= precision_recall_curve(y_test, y_pred_prob)
-    cm         = confusion_matrix(y_test, y_pred_class)
+    auroc = roc_auc_score(y_test, y_pred_prob)
+    auprc = average_precision_score(y_test, y_pred_prob)
+    fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
+    prec, rec, _ = precision_recall_curve(y_test, y_pred_prob)
+    cm = confusion_matrix(y_test, y_pred_class)
 
     fig = plt.figure(figsize=(18, 10))
     fig.suptitle(
@@ -167,7 +172,7 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
     # ── Panel 3: Precision-Recall Curve ───────────────────────────────────────
     ax3 = fig.add_subplot(gs[1, 0])
     ax3.plot(rec, prec, color="purple", lw=2, label=f"AUPRC = {auprc:.4f}")
-    baseline = y_test.mean()          # prevalence = no-skill baseline
+    baseline = y_test.mean()  # prevalence = no-skill baseline
     ax3.axhline(baseline, color="gray", linestyle="--", lw=1,
                 label=f"No-skill baseline = {baseline:.3f}")
     ax3.set_xlabel("Recall (Sensitivity)")
@@ -181,7 +186,7 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
     ax4.hist(y_pred_prob[y_test == 0], bins=50, alpha=0.6,
              color="steelblue", label="Normal", density=True)
     ax4.hist(y_pred_prob[y_test == 1], bins=50, alpha=0.6,
-             color="tomato",    label="Seizure", density=True)
+             color="tomato", label="Seizure", density=True)
     ax4.axvline(DECISION_THRESHOLD, color="black", linestyle="--", lw=1.5,
                 label=f"Threshold = {DECISION_THRESHOLD}")
     ax4.set_xlabel("Predicted Probability")
@@ -212,10 +217,10 @@ def plot_aggregate_summary(summary_df, save_path):
     bars1 = ax.bar(x - width / 2, summary_df["auroc"], width,
                    label="AUROC", color="steelblue", alpha=0.85)
     bars2 = ax.bar(x + width / 2, summary_df["auprc"], width,
-                   label="AUPRC", color="purple",    alpha=0.85)
+                   label="AUPRC", color="purple", alpha=0.85)
     ax.axhline(summary_df["auroc"].mean(), color="steelblue", linestyle="--",
                lw=1.5, label=f"Mean AUROC = {summary_df['auroc'].mean():.4f}")
-    ax.axhline(summary_df["auprc"].mean(), color="purple",    linestyle="--",
+    ax.axhline(summary_df["auprc"].mean(), color="purple", linestyle="--",
                lw=1.5, label=f"Mean AUPRC = {summary_df['auprc'].mean():.4f}")
     ax.set_xticks(x)
     ax.set_xticklabels(subjects, rotation=45, ha="right")
@@ -227,10 +232,10 @@ def plot_aggregate_summary(summary_df, save_path):
 
     # ── Bottom: Secondary (operating-point) metrics ───────────────────────────
     ax2 = axes[1]
-    ax2.plot(subjects, summary_df["sensitivity"],      "o-", color="tomato",    lw=2, label="Sensitivity (Recall)")
-    ax2.plot(subjects, summary_df["specificity"],      "s-", color="steelblue", lw=2, label="Specificity")
-    ax2.plot(subjects, summary_df["balanced_accuracy"],"^-", color="seagreen",  lw=2, label="Balanced Accuracy")
-    ax2.plot(subjects, summary_df["seizure_f1"],       "D-", color="orange",    lw=2, label="Seizure F1")
+    ax2.plot(subjects, summary_df["sensitivity"], "o-", color="tomato", lw=2, label="Sensitivity (Recall)")
+    ax2.plot(subjects, summary_df["specificity"], "s-", color="steelblue", lw=2, label="Specificity")
+    ax2.plot(subjects, summary_df["balanced_accuracy"], "^-", color="seagreen", lw=2, label="Balanced Accuracy")
+    ax2.plot(subjects, summary_df["seizure_f1"], "D-", color="orange", lw=2, label="Seizure F1")
     ax2.set_xticks(range(len(subjects)))
     ax2.set_xticklabels(subjects, rotation=45, ha="right")
     ax2.set_ylim(0, 1.05)
@@ -247,9 +252,10 @@ def plot_aggregate_summary(summary_df, save_path):
 # =============================================================================
 # %% Data Loading
 # =============================================================================
-data   = np.load(dataset_path)
+print(f"Loading dataset from: {dataset_path}")
+data = np.load(dataset_path)
 X, y, groups = data["X"], data["y"], data["s"]
-logo   = LeaveOneGroupOut()
+logo = LeaveOneGroupOut()
 
 # =============================================================================
 # %% LOSO Evaluation Loop
@@ -257,32 +263,33 @@ logo   = LeaveOneGroupOut()
 all_reports = []
 all_histories = []
 
+print(f"📁 Searching for models in: {models_dir}")
+
 for train_idx, test_idx in logo.split(X, y, groups=groups):
     X_test = X[test_idx]
     y_test = y[test_idx]
     current_test_subject = groups[test_idx][0]
 
-    model_path   = os.path.join(models_dir,   f"best_model_subject_{current_test_subject}.keras")
+    model_path = os.path.join(models_dir, f"best_model_subject_{current_test_subject}.keras")
     history_path = os.path.join(histories_dir, f"history_subject_{current_test_subject}.csv")
-    all_histories.append(history_df)
 
     if not os.path.exists(model_path):
-        print(f"⚠️  Skipping Subject {current_test_subject} — model not found.")
+        print(f"⚠️  Skipping Subject {current_test_subject} — model not found at: {model_path}")
         continue
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"🧪  Evaluating Subject: {current_test_subject}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # ── Load model and history ────────────────────────────────────────────────
-    model      = tf.keras.models.load_model(model_path)
+    model = tf.keras.models.load_model(model_path)
     history_df = pd.read_csv(history_path)
 
-    # ── Test-set predictions ──────────────────────────────────────────────────
-    # Note: Utilizing the updated BATCH_SIZE for faster inference
-    y_pred_prob = model.predict(X_test, batch_size=BATCH_SIZE, verbose=0).ravel()
+    # 2. FIXED: Append AFTER loading the data, not before!
+    all_histories.append(history_df)
 
-    # Apply the new fixed threshold explicitly
+    # ── Test-set predictions ──────────────────────────────────────────────────
+    y_pred_prob = model.predict(X_test, batch_size=BATCH_SIZE, verbose=0).ravel()
     y_pred_class = (y_pred_prob >= DECISION_THRESHOLD).astype(int)
 
     # =========================================================================
@@ -297,7 +304,7 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
     # =========================================================================
     print(f"  [SECONDARY] Fixed Threshold = {DECISION_THRESHOLD}")
 
-    report_dict  = classification_report(
+    report_dict = classification_report(
         y_test, y_pred_class,
         target_names=["Normal", "Seizure"],
         output_dict=True,
@@ -310,10 +317,10 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
     cm = confusion_matrix(y_test, y_pred_class)
     tn, fp, fn, tp = cm.ravel()
 
-    sensitivity    = tp / (tp + fn)   if (tp + fn) > 0 else 0.0
-    specificity    = tn / (tn + fp)   if (tn + fp) > 0 else 0.0
-    balanced_acc   = balanced_accuracy_score(y_test, y_pred_class)
-    seizure_f1     = report_dict["Seizure"]["f1-score"]
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    balanced_acc = balanced_accuracy_score(y_test, y_pred_class)
+    seizure_f1 = report_dict["Seizure"]["f1-score"]
 
     print(f"  Sensitivity (Recall) = {sensitivity:.4f}")
     print(f"  Specificity          = {specificity:.4f}")
@@ -321,17 +328,15 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
     print(f"  Seizure F1           = {seizure_f1:.4f}")
 
     all_reports.append({
-        "subject":          current_test_subject,
-        "threshold":        DECISION_THRESHOLD,
-        # PRIMARY (threshold-independent)
-        "auroc":            auroc,
-        "auprc":            auprc,
-        # SECONDARY (operating-point)
-        "accuracy":         report_dict["accuracy"],
-        "balanced_accuracy":balanced_acc,
-        "sensitivity":      sensitivity,
-        "specificity":      specificity,
-        "seizure_f1":       seizure_f1,
+        "subject": current_test_subject,
+        "threshold": DECISION_THRESHOLD,
+        "auroc": auroc,
+        "auprc": auprc,
+        "accuracy": report_dict["accuracy"],
+        "balanced_accuracy": balanced_acc,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "seizure_f1": seizure_f1,
     })
 
     # ── Save plots ────────────────────────────────────────────────────────────
@@ -344,7 +349,6 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
         os.path.join(plots_dir, f"subject_{current_test_subject}_testing_evaluation.png"),
     )
 
-    # Free memory
     del model
     tf.keras.backend.clear_session()
 
@@ -354,21 +358,20 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
 if all_reports:
     summary_df = pd.DataFrame(all_reports)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("🏆  Overall LOSO Summary")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     display(summary_df)
 
     summary_csv_path = os.path.join(output_dir, "overall_loso_summary.csv")
     summary_df.to_csv(summary_csv_path, index=False)
     print(f"\n✅  Summary saved to: {summary_csv_path}")
 
-    # ── Aggregate statistics ──────────────────────────────────────────────────
     print("\n📊  Aggregate Statistics (mean ± std across subjects):")
     metrics = ["auroc", "auprc", "sensitivity", "specificity", "balanced_accuracy", "seizure_f1"]
     col_width = 22
     print(f"  {'Metric':<{col_width}} {'Mean':>8}   {'Std':>8}   {'Min':>8}   {'Max':>8}")
-    print(f"  {'-'*60}")
+    print(f"  {'-' * 60}")
     for m in metrics:
         print(
             f"  {m:<{col_width}} "
@@ -378,14 +381,12 @@ if all_reports:
             f"{summary_df[m].max():>8.4f}"
         )
 
-    # ── Aggregate plot ────────────────────────────────────────────────────────
     plot_aggregate_summary(
         summary_df,
         os.path.join(plots_dir, "aggregate_loso_summary.png"),
     )
     print(f"\n✅  Aggregate plot saved to: {os.path.join(plots_dir, 'aggregate_loso_summary.png')}")
 
-    # ── NEW: Average Training History Plot ────────────────────────────────────
     avg_history_df = calculate_average_history(all_histories)
     if avg_history_df is not None:
         avg_history_path = os.path.join(plots_dir, "aggregate_training_history.png")
