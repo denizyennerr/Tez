@@ -21,9 +21,9 @@ from sklearn.metrics import (
 from IPython.display import display
 
 BASE_DIR = r"P:\adam97\Tez"
-TIMESTAMP = "20260304-091718"
+TIMESTAMP = "20260304-091718-4s"
 
-dataset_path = os.path.join(BASE_DIR, 'master_dataset_4s.npz')
+dataset_path = os.path.join(BASE_DIR, 'master_dataset_1s.npz')
 output_dir = os.path.join(BASE_DIR, "saved_outputs", TIMESTAMP)
 
 models_dir = os.path.join(output_dir, "models")
@@ -172,9 +172,6 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
     # ── Panel 3: Precision-Recall Curve ───────────────────────────────────────
     ax3 = fig.add_subplot(gs[1, 0])
     ax3.plot(rec, prec, color="purple", lw=2, label=f"AUPRC = {auprc:.4f}")
-    baseline = y_test.mean()  # prevalence = no-skill baseline
-    ax3.axhline(baseline, color="gray", linestyle="--", lw=1,
-                label=f"No-skill baseline = {baseline:.3f}")
     ax3.set_xlabel("Recall (Sensitivity)")
     ax3.set_ylabel("Precision")
     ax3.set_title("Precision-Recall Curve\n(PRIMARY metric — better for imbalanced data)")
@@ -209,7 +206,7 @@ def plot_aggregate_summary(summary_df, save_path):
     width = 0.35
 
     fig, axes = plt.subplots(2, 1, figsize=(max(12, len(subjects) * 0.9), 12))
-    fig.suptitle("LOSO Aggregate Performance — CHB-MIT Seizure Detection",
+    fig.suptitle("LOSO Aggregate Performance for 1-second epochs Model— CHB-MIT Seizure Detection",
                  fontsize=15, fontweight="bold")
 
     # ── Top: Primary (threshold-independent) metrics ──────────────────────────
@@ -297,12 +294,12 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
     # =========================================================================
     auroc = roc_auc_score(y_test, y_pred_prob)
     auprc = average_precision_score(y_test, y_pred_prob)
-    print(f"  [PRIMARY]   AUROC = {auroc:.4f}  |  AUPRC = {auprc:.4f}")
+    print(f" AUROC = {auroc:.4f}  |  AUPRC = {auprc:.4f}")
 
     # =========================================================================
     # SECONDARY METRICS (operating-point)
     # =========================================================================
-    print(f"  [SECONDARY] Fixed Threshold = {DECISION_THRESHOLD}")
+    print(f"  Fixed Threshold = {DECISION_THRESHOLD}")
 
     report_dict = classification_report(
         y_test, y_pred_class,
@@ -363,7 +360,7 @@ if all_reports:
     print(f"{'=' * 60}")
     display(summary_df)
 
-    summary_csv_path = os.path.join(output_dir, "overall_loso_summary.csv")
+    summary_csv_path = os.path.join(output_dir, "overall_loso_summary-1s.csv")
     summary_df.to_csv(summary_csv_path, index=False)
     print(f"\n✅  Summary saved to: {summary_csv_path}")
 
@@ -383,7 +380,7 @@ if all_reports:
 
     plot_aggregate_summary(
         summary_df,
-        os.path.join(plots_dir, "aggregate_loso_summary.png"),
+        os.path.join(plots_dir, "aggregate_loso_summary-1s.png"),
     )
     print(f"\n✅  Aggregate plot saved to: {os.path.join(plots_dir, 'aggregate_loso_summary.png')}")
 

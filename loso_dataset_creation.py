@@ -3,8 +3,8 @@ import numpy as np
 from collections import defaultdict
 import gc
 
-DATA_DIR = "processed_npz_files_4s"
-save_as= 'master_dataset_4s.npz'
+DATA_DIR = "processed_npz_files_1s"
+save_as= 'master_dataset_1s.npz'
 
 all_subjects_data = []
 all_labels = []

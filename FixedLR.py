@@ -26,8 +26,7 @@ else:
 
 # ==========================================
 # %% Updated base paths
-dataset_path = 'master_dataset_4s.npz'
-
+dataset_path = 'master_dataset_1s.npz'
 timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 output_dir = os.path.join("saved_outputs", timestamp)
 
