@@ -20,11 +20,10 @@ from sklearn.metrics import (
 )
 from IPython.display import display
 
-BASE_DIR = r"P:\adam97\Tez"
-TIMESTAMP = "20260304-091718-4s"
+TIMESTAMP = "20260301-192746"
 
-dataset_path = os.path.join(BASE_DIR, 'master_dataset_1s.npz')
-output_dir = os.path.join(BASE_DIR, "saved_outputs", TIMESTAMP)
+dataset_path = os.path.join('master_dataset_2s.npz')
+output_dir = os.path.join("saved_outputs", TIMESTAMP)
 
 models_dir = os.path.join(output_dir, "models")
 histories_dir = os.path.join(output_dir, "histories")
@@ -206,7 +205,7 @@ def plot_aggregate_summary(summary_df, save_path):
     width = 0.35
 
     fig, axes = plt.subplots(2, 1, figsize=(max(12, len(subjects) * 0.9), 12))
-    fig.suptitle("LOSO Aggregate Performance for 1-second epochs Model— CHB-MIT Seizure Detection",
+    fig.suptitle("LOSO Aggregate Performance of CHB-MIT Seizure Detection Model",
                  fontsize=15, fontweight="bold")
 
     # ── Top: Primary (threshold-independent) metrics ──────────────────────────
@@ -360,7 +359,7 @@ if all_reports:
     print(f"{'=' * 60}")
     display(summary_df)
 
-    summary_csv_path = os.path.join(output_dir, "overall_loso_summary-1s.csv")
+    summary_csv_path = os.path.join(output_dir, "overall_loso_summary-2s.csv")
     summary_df.to_csv(summary_csv_path, index=False)
     print(f"\n✅  Summary saved to: {summary_csv_path}")
 
@@ -380,7 +379,7 @@ if all_reports:
 
     plot_aggregate_summary(
         summary_df,
-        os.path.join(plots_dir, "aggregate_loso_summary-1s.png"),
+        os.path.join(plots_dir, "aggregate_loso_summary-2s.png"),
     )
     print(f"\n✅  Aggregate plot saved to: {os.path.join(plots_dir, 'aggregate_loso_summary.png')}")
 
