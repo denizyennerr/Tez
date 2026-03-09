@@ -26,9 +26,11 @@ else:
 
 # ==========================================
 # %% Updated base paths
-dataset_path = 'master_dataset_1s.npz'
+dataset_path = 'master_dataset_5s.npz'
+file_name = os.path.splitext(os.path.basename(dataset_path))[0]
+suffix = file_name.split('_')[-1]
 timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = os.path.join("saved_outputs", timestamp)
+output_dir = os.path.join("saved_outputs", f"{timestamp}_{suffix}")
 
 models_dir = os.path.join(output_dir, "models")
 histories_dir = os.path.join(output_dir, "histories")

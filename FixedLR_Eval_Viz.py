@@ -10,14 +10,15 @@ from matplotlib.patches import FancyBboxPatch
 # =============================================================================
 # ── CONFIGURATION  ────────────────────────────────────────────────────────────
 # =============================================================================
-TIMESTAMP   = "20260301-192746"
+TIMESTAMP   = "20260304-135510-1s"
 OUTPUT_DIR  = os.path.join("saved_outputs", TIMESTAMP)
+suffix = TIMESTAMP.split('-')[-1]
 
 # Path to CSV produced by the evaluation script
-SUMMARY_CSV = os.path.join(OUTPUT_DIR, "overall_loso_summary.csv")
+SUMMARY_CSV = os.path.join(OUTPUT_DIR, f"overall_loso_summary-{suffix}.csv")
 
 # Where to save the output figure
-OUTPUT_FIG  = os.path.join(OUTPUT_DIR, "plots", "loso_results_table.png")
+OUTPUT_FIG  = os.path.join(OUTPUT_DIR, "plots", f"loso_results_table_{suffix}.png")
 
 DECISION_THRESHOLD = 0.3
 
@@ -32,9 +33,6 @@ METRICS = [
 ]
 
 # =============================================================================
-# ── COLOUR HELPERS  ───────────────────────────────────────────────────────────
-# =============================================================================
-# Green → Yellow → Red  (value 1.0 → 0.5 → 0.0)
 CMAP = mcolors.LinearSegmentedColormap.from_list(
     "metric_cmap",
     [(0.00, "#d62728"),   # red   – poor
@@ -269,7 +267,7 @@ def plot_results_table(df: pd.DataFrame, save_path: str) -> None:
     # ── Title ─────────────────────────────────────────────────────────────────
     fig.text(
         0.5, 1 - 0.12 / fig_h,
-        "LOSO Evaluation — CHB-MIT Seizure Detection · 2-seconds Epoch",
+        f"LOSO Evaluation — CHB-MIT Seizure Detection · {suffix}-seconds Epoch",
         ha="center", va="top",
         fontsize=14, fontweight="bold", color="#f8fafc",
         fontfamily="monospace",
@@ -386,6 +384,6 @@ if __name__ == "__main__":
 
     # Optional: also export a clean formatted CSV
     export_cols = ["subject"] + [m[0] for m in METRICS]
-    export_path = os.path.join(OUTPUT_DIR, "loso_results_table.csv")
+    export_path = os.path.join(OUTPUT_DIR, f"loso_results_table_{suffix}.csv")
     summary_df[export_cols].round(4).to_csv(export_path, index=False)
     print(f"✅  Formatted CSV saved → {export_path}")
