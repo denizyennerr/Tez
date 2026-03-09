@@ -26,7 +26,7 @@ ENSEMBLE_CONFIG = {
     'master_dataset_2s.npz': 'saved_outputs/20260303-162053-2s/models',
     'master_dataset_4s.npz': 'saved_outputs/20260304-091718-4s/models',
     'master_dataset_5s.npz': 'saved_outputs/20260309-115134_5s/models',
-    'master_dataset_10s.npz': 'saved_outputs/20260309-115134_5s/models',
+    'master_dataset_10s.npz': 'saved_outputs/20260309-155522_10s/models',
 }
 
 output_dir = os.path.join("saved_outputs", "ensemble_results")

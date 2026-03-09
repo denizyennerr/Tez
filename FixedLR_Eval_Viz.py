@@ -10,7 +10,7 @@ from matplotlib.patches import FancyBboxPatch
 # =============================================================================
 # ── CONFIGURATION  ────────────────────────────────────────────────────────────
 # =============================================================================
-TIMESTAMP   = "20260304-091718-4s"
+TIMESTAMP   = "20260304-135510-1s"
 OUTPUT_DIR  = os.path.join("saved_outputs", TIMESTAMP)
 suffix = TIMESTAMP.split('-')[-1]
 
@@ -56,30 +56,28 @@ def text_color(value: float) -> str:
 # =============================================================================
 # ── DATA LOADING  ─────────────────────────────────────────────────────────────
 # =============================================================================
-def load_summary(csv_path: str) -> pd.DataFrame:
+def load_summary(output_dir: str) -> pd.DataFrame:
     """
-    Load the LOSO summary CSV.  Falls back to synthetic demo data so the
-    script can be tested without the full CHB-MIT pipeline.
+    Load the LOSO summary CSV directly from the experiment's output folder.
+    Uses glob to find the file dynamically, bypassing naming inconsistencies (e.g. -4s vs _5s)
+    and entirely removes the synthetic data fallback.
     """
-    if os.path.exists(csv_path):
-        df = pd.read_csv(csv_path)
-    else:
-        print(f"⚠️   CSV not found at '{csv_path}'.  Using synthetic demo data.")
-        rng = np.random.default_rng(42)
-        subjects = [f"chb{i:02d}" for i in range(1, 25)]
-        df = pd.DataFrame({
-            "subject":          subjects,
-            "threshold":        [DECISION_THRESHOLD] * len(subjects),
-            "auroc":            np.clip(rng.normal(0.94, 0.04, len(subjects)), 0.70, 1.00),
-            "auprc":            np.clip(rng.normal(0.74, 0.08, len(subjects)), 0.40, 1.00),
-            "sensitivity":      np.clip(rng.normal(0.82, 0.09, len(subjects)), 0.40, 1.00),
-            "specificity":      np.clip(rng.normal(0.96, 0.03, len(subjects)), 0.70, 1.00),
-            "balanced_accuracy":np.clip(rng.normal(0.89, 0.06, len(subjects)), 0.50, 1.00),
-            "seizure_f1":       np.clip(rng.normal(0.76, 0.09, len(subjects)), 0.30, 1.00),
-        })
-    df["subject"] = df["subject"].astype(str)
-    return df
+    # Look for any file starting with 'overall_loso_summary' and ending in '.csv'
+    search_pattern = os.path.join(output_dir, "overall_loso_summary*.csv")
+    csv_files = glob.glob(search_pattern)
 
+    if not csv_files:
+        raise FileNotFoundError(
+            f" No summary CSV found in '{output_dir}'. Please ensure the evaluation script has run.")
+
+    # Take the first matching CSV found in the folder
+    actual_csv_path = csv_files[0]
+    print(f" Loading dataset from: {actual_csv_path}")
+
+    df = pd.read_csv(actual_csv_path)
+    df["subject"] = df["subject"].astype(str)
+
+    return df
 
 # =============================================================================
 # ── STATS FOOTER  ─────────────────────────────────────────────────────────────
@@ -371,12 +369,12 @@ def print_console_table(df: pd.DataFrame) -> None:
         print(line)
     print(f"{'═' * len(header_row)}\n")
 
-
 # =============================================================================
 # ── ENTRY POINT  ─────────────────────────────────────────────────────────────
 # =============================================================================
 if __name__ == "__main__":
-    summary_df = load_summary(SUMMARY_CSV)
+    # Pass the folder directory instead of the exact CSV path
+    summary_df = load_summary(OUTPUT_DIR)
 
     print_console_table(summary_df)
 
