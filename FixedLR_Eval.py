@@ -20,8 +20,10 @@ from sklearn.metrics import (
 )
 from IPython.display import display
 
-TIMESTAMP = "20260303-162053-2s"
-suffix = TIMESTAMP.split('-')[-1]
+TIMESTAMP = "20260309-115134_5s"
+
+suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
+
 dataset_path = os.path.join(f'master_dataset_{suffix}.npz')
 output_dir = os.path.join("saved_outputs", TIMESTAMP)
 
@@ -195,26 +197,27 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
     plt.close()
 
 
-def plot_aggregate_summary(summary_df, save_path, DECISION_THRESHOLD=0.3):
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def plot_primary_metrics(summary_df, save_path):
     """
-    Bar chart of per-subject primary metrics (AUROC, AUPRC) with mean line,
-    plus secondary operating-point metrics plotted as a grouped bar chart.
+    Bar chart of per-subject primary metrics (AUROC, AUPRC) with mean lines.
+    Saved as an independent standalone figure.
     """
     subjects = summary_df["subject"].astype(str)
     x = np.arange(len(subjects))
+    width = 0.35
 
-    # Slightly wider figure to accommodate 4 bars per subject comfortably
-    fig, axes = plt.subplots(2, 1, figsize=(max(14, len(subjects) * 1.0), 12))
-    fig.suptitle("LOSO Aggregate Performance of CHB-MIT Seizure Detection Model",
+    # Adjusted figsize to be optimal for a single wide plot
+    fig, ax = plt.subplots(figsize=(max(12, len(subjects) * 0.6), 6))
+    fig.suptitle("LOSO Performance Metrics of CHB-MIT Seizure Detection Model",
                  fontsize=15, fontweight="bold")
 
-    # ── Top: Primary (threshold-independent) metrics ──────────────────────────
-    ax = axes[0]
-    width_top = 0.35
-
-    ax.bar(x - width_top / 2, summary_df["auroc"], width_top,
+    ax.bar(x - width / 2, summary_df["auroc"], width,
            label="AUROC", color="steelblue", alpha=0.85)
-    ax.bar(x + width_top / 2, summary_df["auprc"], width_top,
+    ax.bar(x + width / 2, summary_df["auprc"], width,
            label="AUPRC", color="purple", alpha=0.85)
 
     ax.axhline(summary_df["auroc"].mean(), color="steelblue", linestyle="--",
@@ -226,50 +229,58 @@ def plot_aggregate_summary(summary_df, save_path, DECISION_THRESHOLD=0.3):
     ax.set_xticklabels(subjects, rotation=45, ha="right")
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Score")
-    ax.set_title("Primary Metrics (Threshold-Independent)")
+    ax.set_title("Primary Metrics")
     ax.legend(loc="lower left", fontsize=9)
+
     ax.grid(True, axis="y", linestyle="--", alpha=0.5)
-
-    # ── Bottom: Secondary (operating-point) metrics ───────────────────────────
-    ax2 = axes[1]
-
-    # We have 4 metrics, so we divide the available width per subject space
-    width_bottom = 0.20
-
-    # Calculate offset positions for the 4 bars around the central 'x' tick
-    offset1 = -1.5 * width_bottom
-    offset2 = -0.5 * width_bottom
-    offset3 = 0.5 * width_bottom
-    offset4 = 1.5 * width_bottom
-
-    # Plot the grouped bars
-    ax2.bar(x + offset1, summary_df["sensitivity"], width_bottom,
-            label="Sensitivity (Recall)", color="tomato", alpha=0.85)
-    ax2.bar(x + offset2, summary_df["specificity"], width_bottom,
-            label="Specificity", color="steelblue", alpha=0.85)
-    ax2.bar(x + offset3, summary_df["balanced_accuracy"], width_bottom,
-            label="Balanced Accuracy", color="seagreen", alpha=0.85)
-    ax2.bar(x + offset4, summary_df["seizure_f1"], width_bottom,
-            label="Seizure F1", color="orange", alpha=0.85)
-
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(subjects, rotation=45, ha="right")
-    ax2.set_ylim(0, 1.05)
-    ax2.set_ylabel("Score")
-    ax2.set_title(f"Secondary Metrics (Fixed Threshold = {DECISION_THRESHOLD})")
-
-    # Spread the legend horizontally to save vertical space
-    ax2.legend(loc="lower left", fontsize=9, ncol=4)
-
-    # Add minor horizontal grid lines to help read exact bar heights
-    ax2.grid(True, axis="y", linestyle="--", alpha=0.5)
-    ax2.set_axisbelow(True)  # Ensures grid lines stay behind the bars
+    ax.set_axisbelow(True)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
 
 
+def plot_secondary_metrics(summary_df, save_path, DECISION_THRESHOLD=0.3):
+    """
+    Grouped bar chart of secondary operating-point metrics.
+    Saved as an independent standalone figure.
+    """
+    subjects = summary_df["subject"].astype(str)
+    x = np.arange(len(subjects))
+    width = 0.20
+
+    # Needs a slightly wider base width to accommodate 4 bars per subject
+    fig, ax = plt.subplots(figsize=(max(14, len(subjects) * 1.0), 6))
+    fig.suptitle("LOSO Performance Metrics of CHB-MIT Seizure Detection Model",
+                 fontsize=15, fontweight="bold")
+
+    offset1 = -1.5 * width
+    offset2 = -0.5 * width
+    offset3 = 0.5 * width
+    offset4 = 1.5 * width
+
+    ax.bar(x + offset1, summary_df["sensitivity"], width,
+           label="Sensitivity (Recall)", color="tomato", alpha=0.85)
+    ax.bar(x + offset2, summary_df["specificity"], width,
+           label="Specificity", color="steelblue", alpha=0.85)
+    ax.bar(x + offset3, summary_df["balanced_accuracy"], width,
+           label="Balanced Accuracy", color="seagreen", alpha=0.85)
+    ax.bar(x + offset4, summary_df["seizure_f1"], width,
+           label="Seizure F1", color="orange", alpha=0.85)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(subjects, rotation=45, ha="right")
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("Score")
+    ax.set_title(f"Secondary Performance Metrics")
+
+    ax.legend(loc="lower left", fontsize=9, ncol=4)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+    ax.set_axisbelow(True)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
 # =============================================================================
 # %% Data Loading
 # =============================================================================
@@ -402,11 +413,14 @@ if all_reports:
             f"{summary_df[m].max():>8.4f}"
         )
 
-    plot_aggregate_summary(
-        summary_df,
-        os.path.join(plots_dir, f"aggregate_loso_summary_{suffix}.png"),
-    )
-    print(f"\n✅  Aggregate plot saved to: {os.path.join(plots_dir, f'aggregate_loso_summary_{suffix}.png')}")
+    primary_plot_path = os.path.join(plots_dir, f"aggregate_primary_metrics_{suffix}.png")
+    secondary_plot_path = os.path.join(plots_dir, f"aggregate_secondary_metrics_{suffix}.png")
+
+    plot_primary_metrics(summary_df, primary_plot_path)
+    print(f"\n✅  Primary aggregate plot saved to: {primary_plot_path}")
+
+    plot_secondary_metrics(summary_df, secondary_plot_path, DECISION_THRESHOLD)
+    print(f"✅  Secondary aggregate plot saved to: {secondary_plot_path}")
 
     avg_history_df = calculate_average_history(all_histories)
     if avg_history_df is not None:
