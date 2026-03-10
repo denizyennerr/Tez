@@ -18,7 +18,7 @@ from IPython.display import display
 # =============================================================================
 BATCH_SIZE = 128
 DECISION_THRESHOLD = 0.3
-VOTING_METHOD = 'hard'  # Choose 'soft' or 'hard'
+VOTING_METHOD = 'soft'
 
 # Define the models and their corresponding datasets to ensemble
 ENSEMBLE_CONFIG = {
