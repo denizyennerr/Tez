@@ -17,15 +17,15 @@ total_seizures = 0
 total_files_with_seizures = 0
 
 # Configuration
-WINDOW_SIZE = 10  # seconds
+WINDOW_SIZE = 0.5  # seconds
 OVERLAP = 0.5  # 50% overlap
-WINDOW_SAMPLES = WINDOW_SIZE * new_fs  # 4 * 128 = 256 samples
+WINDOW_SAMPLES = int(WINDOW_SIZE * new_fs)
 STEP_SAMPLES = int(WINDOW_SAMPLES * (1 - OVERLAP))
 
-NPZ_OUTPUT_DIR = "processed_npz_files_10s"
+NPZ_OUTPUT_DIR = "processed_npz_files_0.5s"
 os.makedirs(NPZ_OUTPUT_DIR, exist_ok=True)
 
-data_frame_name = 'final_dataset_all_patients_10s.csv'
+data_frame_name = 'final_dataset_all_patients_0.5s.csv'
 
 PATIENTS_TO_USE = ['chb01', 'chb02', 'chb03',
                    'chb04', 'chb05', 'chb06',
@@ -212,7 +212,9 @@ for patient in PATIENTS_TO_USE:
             del signals_temp
             gc.collect()
 
+
         except Exception as e:
+            print(f"   [!] Error processing {filename}: {e}")
             continue
 
     print(f"   ✓ {patient}: {patient_seizure} seizure, {patient_normal} normal")
