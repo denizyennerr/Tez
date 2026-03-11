@@ -29,6 +29,15 @@ ENSEMBLE_CONFIG = {
     'master_dataset_10s.npz': 'saved_outputs/20260309-155522_10s/models',
 }
 
+# Giving higher priority to 1s and 2s window models as requested
+MODEL_WEIGHTS = {
+    'master_dataset_1s.npz': 0.40,  # 40% importance
+    'master_dataset_2s.npz': 0.30,  # 30% importance
+    'master_dataset_4s.npz': 0.10,  # 10% importance
+    'master_dataset_5s.npz': 0.10,  # 10% importance
+    'master_dataset_10s.npz': 0.10,  # 10% importance
+}
+
 output_dir = os.path.join("saved_outputs", "ensemble_results")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -72,7 +81,6 @@ for train_idx_base, test_idx_base in logo.split(datasets[base_ds_name]['X'], y_b
     # Iterate through each model/dataset in the ensemble
     for ds_path, models_dir in ENSEMBLE_CONFIG.items():
         # 1. Find the test indices for the current subject in THIS specific dataset
-        # (Since lengths differ, we cannot use test_idx_base for the 2s and 4s datasets)
         subject_mask = (datasets[ds_path]['groups'] == current_test_subject)
         X_test_ds = datasets[ds_path]['X'][subject_mask]
 
@@ -112,15 +120,18 @@ for train_idx_base, test_idx_base in logo.split(datasets[base_ds_name]['X'], y_b
     # Convert the list of arrays into a single 2D NumPy array (Shape: [Num_Models, Target_Length])
     subject_predictions_prob = np.array(subject_predictions_prob)
 
-    # Generate discrete classes from the aligned probabilities
+    # Generate discrete classes from the aligned probabilities (used if falling back to hard voting)
     subject_predictions_class = (subject_predictions_prob >= DECISION_THRESHOLD).astype(int)
 
     # =========================================================================
-    # FUSION LOGIC (Soft vs. Hard Voting)
+    # FUSION LOGIC (Weighted Soft vs. Hard Voting)
     # =========================================================================
     if VOTING_METHOD == 'soft':
-        # Average the interpolated probabilities across all models
-        ensemble_prob = np.mean(subject_predictions_prob, axis=0)
+        # 🌟 NEW: Extract the weights in the exact same order as the predictions were added
+        model_weights_array = [MODEL_WEIGHTS[ds] for ds in ENSEMBLE_CONFIG.keys()]
+
+        # Apply weighted average rather than a simple mean
+        ensemble_prob = np.average(subject_predictions_prob, axis=0, weights=model_weights_array)
         ensemble_class = (ensemble_prob >= DECISION_THRESHOLD).astype(int)
 
     elif VOTING_METHOD == 'hard':
@@ -152,7 +163,7 @@ for train_idx_base, test_idx_base in logo.split(datasets[base_ds_name]['X'], y_b
     balanced_acc = balanced_accuracy_score(y_test_actual, ensemble_class)
     seizure_f1 = report_dict["Seizure"]["f1-score"]
 
-    print(f"  Fusion Type          = {VOTING_METHOD.capitalize()} Voting")
+    print(f"  Fusion Type          = Weighted {VOTING_METHOD.capitalize()} Voting")
     print(f"  Ensemble AUROC       = {auroc:.4f}")
     print(f"  Ensemble AUPRC       = {auprc:.4f}")
     print(f"  Sensitivity (Recall) = {sensitivity:.4f}")
@@ -177,10 +188,10 @@ if all_reports:
     summary_df = pd.DataFrame(all_reports)
 
     print(f"\n{'=' * 60}")
-    print(f"🏆  Overall LOSO Ensemble Summary ({VOTING_METHOD.capitalize()} Voting)")
+    print(f"🏆  Overall LOSO Ensemble Summary (Weighted {VOTING_METHOD.capitalize()} Voting)")
     print(f"{'=' * 60}")
 
-    summary_csv_path = os.path.join(output_dir, f"ensemble_{VOTING_METHOD}_summary.csv")
+    summary_csv_path = os.path.join(output_dir, f"ensemble_weighted_{VOTING_METHOD}_summary.csv")
     summary_df.to_csv(summary_csv_path, index=False)
     print(f"\n✅  Summary saved to: {summary_csv_path}")
 

@@ -6,7 +6,7 @@ import seaborn as sns
 # =============================================================================
 # ⚙️ Configuration
 # =============================================================================
-VOTING_METHOD = 'hard'
+VOTING_METHOD = 'soft'
 RESULTS_CSV = os.path.join("saved_outputs", "ensemble_results", f"ensemble_{VOTING_METHOD}_summary.csv")
 OUTPUT_DIR = os.path.join("saved_outputs", "ensemble_results", "plots")
 

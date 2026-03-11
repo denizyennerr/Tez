@@ -1,113 +1,86 @@
 import os
-import glob
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # =============================================================================
 # ⚙️ Configuration
 # =============================================================================
-BASE_DIR = "saved_outputs"
+RESULTS_CSV = "saved_outputs/all_models_performance_comparison.csv"
+OUTPUT_DIR = os.path.join("saved_outputs", "ensemble_results", "plots")
 
-# The specific metrics we want to extract and compare
-METRICS = [
-    "auroc",
-    "auprc",
-    "sensitivity",
-    "specificity",
-    "balanced_accuracy",
-    "seizure_f1"
-]
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Rename columns for the final presentation table
-METRIC_NAMES = {
-    "auroc": "AUROC",
-    "auprc": "AUPRC",
-    "sensitivity": "Sensitivity",
-    "specificity": "Specificity",
-    "balanced_accuracy": "Balanced Accuracy",
-    "seizure_f1": "Seizure F1-Score"
-}
+# Set global seaborn styling
+sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
+# =============================================================================
+# 1. Load Data
+# =============================================================================
+if not os.path.exists(RESULTS_CSV):
+    raise FileNotFoundError(f"Could not find {RESULTS_CSV}. Please ensure it is in the correct directory.")
 
-def aggregate_all_results():
-    print(f"📁 Searching for summary CSVs in '{BASE_DIR}'...\n")
+df = pd.read_csv(RESULTS_CSV)
 
-    # 1. Find all individual model summary CSVs recursively
-    individual_files = glob.glob(os.path.join(BASE_DIR, "**", "overall_loso_summary_*.csv"), recursive=True)
+# Melt DataFrame for Seaborn plotting (Grouped Bar Chart format)
+df_melted = df.melt(id_vars=["Model"], var_name="Metric", value_name="Score")
 
-    # 2. Find all ensemble summary CSVs
-    ensemble_files = glob.glob(os.path.join(BASE_DIR, "**", "ensemble_*_summary.csv"), recursive=True)
+# =============================================================================
+# 2. Grouped Bar Chart (All Models Comparison)
+# =============================================================================
+plt.figure(figsize=(16, 8))
 
-    all_files = individual_files + ensemble_files
-    results_list = []
+# Grouped barplot: X-axis = Metric, Y-axis = Score, Color = Model
+ax = sns.barplot(
+    data=df_melted,
+    x="Metric",
+    y="Score",
+    hue="Model",
+    palette="Set2"  # Distinct color palette for different models
+)
 
-    if not all_files:
-        print("⚠️ No summary CSV files found. Please check your directory structure.")
-        return
+plt.title("Performance Comparison Across All Epoched & Ensemble Models", fontsize=18, fontweight='bold')
+plt.ylabel("Score", fontsize=14)
+plt.xlabel("Evaluation Metric", fontsize=14)
+plt.ylim(0.0, 1.05) # Metrics are between 0 and 1
+plt.xticks(rotation=15)
 
-    # 3. Process each file
-    for file_path in all_files:
-        try:
-            df = pd.read_csv(file_path)
+# Place the legend outside the plot so it doesn't overlap the bars
+plt.legend(title="Model Type", bbox_to_anchor=(1.01, 1), loc='upper left', fontsize=11)
+plt.tight_layout()
 
-            # Determine the model name from the filename
-            filename = os.path.basename(file_path)
-            if "ensemble" in filename:
-                # Extracts 'hard' or 'soft' from 'ensemble_hard_summary.csv'
-                voting_type = filename.split('_')[1]
-                model_name = f"Ensemble ({voting_type.capitalize()})"
-            else:
-                # Extracts '10s' from 'overall_loso_summary_10s.csv'
-                suffix = filename.replace(".csv", "").split("_")[-1]
-                model_name = f"{suffix} Model"
+# Save plot
+barplot_path = os.path.join(OUTPUT_DIR, "all_models_comparison_barplot.png")
+plt.savefig(barplot_path, dpi=300)
+print(f"✅ Comparison Barplot saved to: {barplot_path}")
+plt.close()
 
-            # Check if required metrics exist in the DataFrame
-            missing_metrics = [m for m in METRICS if m not in df.columns]
-            if missing_metrics:
-                print(f"⚠️ Skipping {model_name} because missing columns: {missing_metrics}")
-                continue
+# =============================================================================
+# 3. Overall Performance Heatmap
+# =============================================================================
+plt.figure(figsize=(12, 8))
 
-            # Calculate the mean across all subjects for this model
-            means = df[METRICS].mean().to_dict()
+# Set the Model as the index for the heatmap
+df_heatmap = df.set_index("Model")
 
-            # Format the row for our final table
-            row = {"Model": model_name}
-            for k, v in means.items():
-                row[METRIC_NAMES[k]] = round(v, 4)
+# Create Heatmap
+sns.heatmap(
+    df_heatmap,
+    annot=True,
+    fmt=".4f",
+    cmap="RdYlGn", # Red (poor) to Green (excellent)
+    cbar_kws={'label': 'Score'},
+    vmin=0.2, vmax=1.0 # Adjusted minimum scale so differences pop out more
+)
 
-            results_list.append(row)
+plt.title("Overall Performance Metrics Across All Models", fontsize=16, fontweight='bold')
+plt.ylabel("Model", fontsize=14)
+plt.xlabel("Metrics", fontsize=14)
+plt.xticks(rotation=45, ha='right')
+plt.tight_layout()
 
-        except Exception as e:
-            print(f"❌ Error processing {file_path}: {e}")
-
-    # 4. Generate the final table
-    if results_list:
-        final_df = pd.DataFrame(results_list)
-
-        # Define a custom sort so epoch numbers appear in order, with Ensemble at the bottom
-        def sort_key(model_name):
-            if "Ensemble" in model_name:
-                return float('inf')  # Push ensemble to the end
-            else:
-                # Extract the number from '10s Model' for sorting
-                num_str = ''.join([c for c in model_name if c.isdigit() or c == '.'])
-                return float(num_str) if num_str else 999
-
-        # Apply sorting
-        final_df['sort_val'] = final_df['Model'].apply(sort_key)
-        final_df = final_df.sort_values('sort_val').drop('sort_val', axis=1).reset_index(drop=True)
-
-        # 5. Display and Save
-        print("=" * 85)
-        print("🏆 Aggregated Model Performance Comparison (Mean across Subjects) 🏆")
-        print("=" * 85)
-        print(final_df.to_string(index=False))
-        print("=" * 85)
-
-        # Save to the root of saved_outputs
-        out_csv = os.path.join(BASE_DIR, "all_models_performance_comparison.csv")
-        final_df.to_csv(out_csv, index=False)
-        print(f"\n✅ Comparison table saved to: {out_csv}")
-
-
-if __name__ == "__main__":
-    aggregate_all_results()
+# Save plot
+heatmap_path = os.path.join(OUTPUT_DIR, "all_models_comparison_heatmap.png")
+plt.savefig(heatmap_path, dpi=300)
+print(f"✅ Comparison Heatmap saved to: {heatmap_path}")
+plt.close()
