@@ -21,7 +21,7 @@ from sklearn.metrics import (
 )
 from IPython.display import display
 
-TIMESTAMP = "20260303-162053-2s"
+TIMESTAMP = "20260309-155522_10s"
 suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
 
 dataset_path = os.path.join(f'master_dataset_{suffix}.npz')
@@ -108,7 +108,7 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
     prec, rec, _ = precision_recall_curve(y_test, y_pred_prob)
     cm = confusion_matrix(y_test, y_pred_class)
     fig = plt.figure(figsize=(18, 10))
-    fig.suptitle(f"Testing Evaluation | Subject: {subject} | Fixed Threshold = {DECISION_THRESHOLD}", fontsize=14,
+    fig.suptitle(f"Testing Evaluation | Subject: {subject} ", fontsize=14,
                  fontweight="bold")
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.4, wspace=0.35)
 
@@ -122,17 +122,17 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
     ax2 = fig.add_subplot(gs[0, 1])
     ax2.plot(fpr, tpr, color="steelblue", lw=2, label=f"AUROC = {auroc:.4f}")
     ax2.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5, label="Random classifier")
-    ax2.set_xlabel("False Positive Rate (1 − Specificity)")
-    ax2.set_ylabel("True Positive Rate (Sensitivity)")
-    ax2.set_title("ROC Curve\n(PRIMARY metric)")
+    ax2.set_xlabel("False Positive Rate")
+    ax2.set_ylabel("True Positive Rate ")
+    ax2.set_title("ROC Curve")
     ax2.legend(loc="lower right")
     ax2.grid(True, linestyle="--", alpha=0.6)
 
     ax3 = fig.add_subplot(gs[1, 0])
     ax3.plot(rec, prec, color="purple", lw=2, label=f"AUPRC = {auprc:.4f}")
-    ax3.set_xlabel("Recall (Sensitivity)")
+    ax3.set_xlabel("Recall")
     ax3.set_ylabel("Precision")
-    ax3.set_title("Precision-Recall Curve\n(PRIMARY metric — better for imbalanced data)")
+    ax3.set_title("Precision-Recall Curve")
     ax3.legend(loc="upper right")
     ax3.grid(True, linestyle="--", alpha=0.6)
 
@@ -158,14 +158,14 @@ def plot_aggregate_testing_evaluation(y_test_all, y_pred_prob_all, y_pred_class_
     cm = confusion_matrix(y_test_all, y_pred_class_all)
 
     fig = plt.figure(figsize=(18, 10))
-    fig.suptitle(f"Global Aggregate Testing Evaluation | All Subjects | Fixed Threshold = {DECISION_THRESHOLD}",
+    fig.suptitle(f"Global Aggregate Testing Evaluation | All Subjects",
                  fontsize=16, fontweight="bold")
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.4, wspace=0.35)
 
     ax1 = fig.add_subplot(gs[0, 0])
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax1, xticklabels=["Normal", "Seizure"],
                 yticklabels=["Normal", "Seizure"], annot_kws={"size": 16})
-    ax1.set_title(f"Global Confusion Matrix\n(Threshold = {DECISION_THRESHOLD})", fontsize=14)
+    ax1.set_title(f"Global Confusion Matrix", fontsize=14)
     ax1.set_ylabel("True Label", fontsize=12)
     ax1.set_xlabel("Predicted Label", fontsize=12)
 
@@ -174,7 +174,7 @@ def plot_aggregate_testing_evaluation(y_test_all, y_pred_prob_all, y_pred_class_
     ax2.plot([0, 1], [0, 1], "k--", lw=1.5, alpha=0.5, label="Random classifier")
     ax2.set_xlabel("False Positive Rate (1 − Specificity)", fontsize=12)
     ax2.set_ylabel("True Positive Rate (Sensitivity)", fontsize=12)
-    ax2.set_title("Global ROC Curve\n(PRIMARY metric)", fontsize=14)
+    ax2.set_title("Global ROC Curve", fontsize=14)
     ax2.legend(loc="lower right", fontsize=12)
     ax2.grid(True, linestyle="--", alpha=0.6)
 
@@ -182,7 +182,7 @@ def plot_aggregate_testing_evaluation(y_test_all, y_pred_prob_all, y_pred_class_
     ax3.plot(rec, prec, color="purple", lw=2.5, label=f"Global AUPRC = {auprc:.4f}")
     ax3.set_xlabel("Recall (Sensitivity)", fontsize=12)
     ax3.set_ylabel("Precision", fontsize=12)
-    ax3.set_title("Global Precision-Recall Curve\n(PRIMARY metric — better for imbalanced data)", fontsize=14)
+    ax3.set_title("Global Precision-Recall Curve", fontsize=14)
     ax3.legend(loc="upper right", fontsize=12)
     ax3.grid(True, linestyle="--", alpha=0.6)
 
@@ -205,7 +205,7 @@ def plot_primary_metrics(summary_df, save_path):
     x = np.arange(len(subjects))
     width = 0.35
     fig, ax = plt.subplots(figsize=(max(12, len(subjects) * 0.6), 6))
-    fig.suptitle("LOSO Performance Metrics of CHB-MIT Seizure Detection Model", fontsize=15, fontweight="bold")
+    fig.suptitle(f"LOSO Performance Metrics of {suffix} - CHB-MIT Seizure Detection Model", fontsize=15, fontweight="bold")
     ax.bar(x - width / 2, summary_df["auroc"], width, label="AUROC", color="steelblue", alpha=0.85)
     ax.bar(x + width / 2, summary_df["auprc"], width, label="AUPRC", color="purple", alpha=0.85)
     ax.axhline(summary_df["auroc"].mean(), color="steelblue", linestyle="--", lw=1.5,
@@ -230,7 +230,7 @@ def plot_secondary_metrics(summary_df, save_path, DECISION_THRESHOLD=0.3):
     x = np.arange(len(subjects))
     width = 0.20
     fig, ax = plt.subplots(figsize=(max(14, len(subjects) * 1.0), 6))
-    fig.suptitle("LOSO Performance Metrics of CHB-MIT Seizure Detection Model", fontsize=15, fontweight="bold")
+    fig.suptitle(f"LOSO Performance Metrics of {suffix} - CHB-MIT Seizure Detection Model", fontsize=15, fontweight="bold")
     offset1, offset2, offset3, offset4 = -1.5 * width, -0.5 * width, 0.5 * width, 1.5 * width
     ax.bar(x + offset1, summary_df["sensitivity"], width, label="Sensitivity (Recall)", color="tomato", alpha=0.85)
     ax.bar(x + offset2, summary_df["specificity"], width, label="Specificity", color="steelblue", alpha=0.85)

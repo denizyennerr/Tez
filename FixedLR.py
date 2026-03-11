@@ -26,7 +26,7 @@ else:
 
 # ==========================================
 # %% Updated base paths
-dataset_path = 'master_dataset_10s.npz'
+dataset_path = 'master_dataset_0.5s.npz'
 file_name = os.path.splitext(os.path.basename(dataset_path))[0]
 suffix = file_name.split('_')[-1]
 timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
