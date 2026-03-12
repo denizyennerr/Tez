@@ -13,7 +13,7 @@ MODEL_CSVS = {
     "1s Model": "saved_outputs/20260304-135510-1s/overall_loso_summary_1s.csv",
     "2s Model": "saved_outputs/20260303-162053-2s/overall_loso_summary_2s.csv",
     "4s Model": "saved_outputs/20260304-091718-4s/overall_loso_summary_4s.csv",
-    "Ensemble (Opt Thresh Soft)": "saved_outputs/ensemble_results_static/ensemble_opt_thresh_soft_summary.csv",
+    "Ensemble (Weighted Soft Voting)": "saved_outputs/ensemble_results_static/ensemble_weighted_soft_summary.csv",
 
     # Optional: If you also ran the 'max' fusion and saved it to the new static folder, you can include it here:
     # "Ensemble (Max)":           "saved_outputs/ensemble_results_static/ensemble_max_summary.csv"

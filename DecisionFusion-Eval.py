@@ -165,7 +165,7 @@ for train_idx_base, test_idx_base in logo.split(
     accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0.0
 
     print(f'\n  Fusion Type          = Weighted {VOTING_METHOD.capitalize()} Fusion')
-    print(f'  Optimal Threshold    = {best_threshold:.4f}  <-- 🔥 Automatically Tuned')
+    print(f'  Optimal Threshold    = {best_threshold:.4f} ')
     print(f'  Ensemble AUROC       = {auroc:.4f}')
     print(f'  Ensemble AUPRC       = {auprc:.4f}')
     print(f'  Sensitivity (Recall) = {sensitivity:.4f}')
@@ -192,7 +192,7 @@ if all_reports:
     summary_df = pd.DataFrame(all_reports)
 
     print(f"\n{'=' * 65}")
-    print(f'🏆  Overall LOSO Ensemble Summary — Opt. Threshold Weighted {VOTING_METHOD.capitalize()} Fusion')
+    print(f'🏆  Overall LOSO Ensemble Summary — Weighted {VOTING_METHOD.capitalize()} Fusion')
     print(f"{'=' * 65}")
 
     summary_csv_path = os.path.join(
