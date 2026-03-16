@@ -23,10 +23,10 @@ datasets_info = {
     '10s': {'data': 'master_dataset_10s.npz', 'models_dir': 'saved_outputs/20260309-155522_10s/models'},
 }
 
-output_csv_name = "all_models_performance_comparison_1s_ref_modelweight.csv"
+output_csv_name = "all_models_performance_comparison_1s_ref_modelweight2.csv"
 
 # Weights based on Eval script insights
-model_weights = {'0.5s': 1.0, '1s': 3.5, '2s': 1.0, '4s': 0.5, '5s': 0.0, '10s': 0.0}
+model_weights = {'0.5s': 1.0, '1s': 3.5, '2s': 1.5, '4s': 0.0, '5s': 0.0, '10s': 0.0}
 
 # FIXED A PRIORI CLINICAL THRESHOLD
 FIXED_THRESHOLD = 0.3

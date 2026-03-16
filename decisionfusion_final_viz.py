@@ -6,7 +6,7 @@ import seaborn as sns
 # =============================================================================
 # ⚙️ Configuration
 # =============================================================================
-INPUT_CSV = "all_models_performance_comparison_1s_ref.csv"
+INPUT_CSV = "all_models_performance_comparison_1s_ref_modelweight.csv"
 OUTPUT_DIR = os.path.join("saved_outputs", "ensemble_results", "plots")
 
 # Create output directory if it doesn't exist
@@ -52,7 +52,7 @@ plt.xticks(rotation=45, ha="right")
 plt.tight_layout()
 
 # Save plot
-heatmap_path = os.path.join(OUTPUT_DIR, "model_comparison_heatmap.png")
+heatmap_path = os.path.join(OUTPUT_DIR, "model_comparison_heatmap_modelweight.png")
 plt.savefig(heatmap_path, dpi=300)
 print(f"✅ Heatmap saved to: {heatmap_path}")
 plt.close()
@@ -84,7 +84,7 @@ plt.xticks(rotation=15)
 plt.tight_layout()
 
 # Save plot
-barchart_path = os.path.join(OUTPUT_DIR, "model_comparison_barchart.png")
+barchart_path = os.path.join(OUTPUT_DIR, "model_comparison_barchart_weighted.png")
 plt.savefig(barchart_path, dpi=300)
 print(f"✅ Bar chart saved to: {barchart_path}")
 plt.close()
