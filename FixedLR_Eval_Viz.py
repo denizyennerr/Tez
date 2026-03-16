@@ -11,7 +11,7 @@ from matplotlib.patches import FancyBboxPatch
 # =============================================================================
 # ── CONFIGURATION  ────────────────────────────────────────────────────────────
 # =============================================================================
-TIMESTAMP   = "20260309-155522_10s"
+TIMESTAMP   = "20260311-144059_0.5s"
 OUTPUT_DIR  = os.path.join("saved_outputs", TIMESTAMP)
 suffix = TIMESTAMP.split('-')[-1]
 
