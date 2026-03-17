@@ -13,7 +13,7 @@ NPZ_OUTPUT_DIR = "processed_master_datasets"
 os.makedirs(NPZ_OUTPUT_DIR, exist_ok=True)
 
 # ---> CHANGE THIS VALUE to generate datasets for 0.5, 1.0, 2.0, 4.0, 5.0, 10.0
-WINDOW_SIZE = 2.0
+WINDOW_SIZE = 10.0
 
 # RULE 1: Zero Overlap. Windows must be strictly contiguous.
 OVERLAP = 0.0
@@ -106,8 +106,6 @@ for patient in PATIENTS_TO_USE:
 
             # -----------------------------------------------------------------
             # RULE 2: ZERO PADDING
-            # Pad the file with zeros at the end so its total duration is
-            # perfectly divisible by 10 seconds.
             # -----------------------------------------------------------------
             duration_sec = n_samples / new_fs
             remainder = duration_sec % LARGEST_WINDOW_REF
@@ -116,7 +114,6 @@ for patient in PATIENTS_TO_USE:
                 pad_sec = LARGEST_WINDOW_REF - remainder
                 pad_samples = int(round(pad_sec * new_fs))
 
-                # signals_temp shape is (channels, time)
                 padding = np.zeros((signals_temp.shape[0], pad_samples), dtype=np.float32)
                 signals_temp = np.concatenate([signals_temp, padding], axis=1)
 
@@ -132,21 +129,16 @@ for patient in PATIENTS_TO_USE:
 
                 # -------------------------------------------------------------
                 # RULE 3: THE "ANY" RULE
-                # If the window touches a seizure for ANY duration, it's a seizure.
                 # -------------------------------------------------------------
                 is_seizure = False
                 for sz_start, sz_end in seizure_times:
                     overlap_start = max(window_start_sec, sz_start)
                     overlap_end = min(window_end_sec, sz_end)
 
-                    if overlap_end > overlap_start:  # No 50% threshold, ANY overlap triggers
+                    if overlap_end > overlap_start:
                         is_seizure = True
                         break
 
-                # -------------------------------------------------------------
-                # RULE 4: KEEP EVERYTHING IN ORDER (No random skips)
-                # RULE 5: TRACK FILE IDs (Store filename per window)
-                # -------------------------------------------------------------
                 master_X.append(window.astype(np.float32))
                 master_y.append(1 if is_seizure else 0)
                 master_s.append(patient)
@@ -174,20 +166,33 @@ for patient in PATIENTS_TO_USE:
 print("\n" + "-" * 50)
 print("📦 Compiling and saving the master dataset...")
 
-# Convert to arrays.
-# STRICT ENFORCEMENT OF RULE 4: No np.random.permutation used. Order is strictly chronological.
+# Initial shape will be (N, Channels, Window_Samples)
 X = np.array(master_X, dtype=np.float32)
 y = np.array(master_y, dtype=np.int8)
 s = np.array(master_s, dtype=str)
 file_id = np.array(master_file_id, dtype=str)
 
-# Clear lists to free RAM before saving
+# Clear lists to free RAM before transposing and saving
 del master_X, master_y, master_s, master_file_id
 gc.collect()
 
+# -----------------------------------------------------------------------------
+# TRANSPOSING THE DATA
+# Original axes mapping:
+# 0 = N (Memory Size / Total Windows)
+# 1 = Channels (Shape of X feature dim)
+# 2 = Window_Samples (Window Size)
+#
+# We transpose (0, 1, 2) to (2, 0, 1) to get (Window_Samples, N, Channels)
+# -----------------------------------------------------------------------------
+X = np.transpose(X, (2, 0, 1))
+
+# Note: If you instead meant (N, Window_Samples, Channels), you would change
+# the line above to: X = np.transpose(X, (0, 2, 1))
+
 print(f"\n📈 Final {WINDOW_SIZE}s Dataset:")
-print(f"   • Total Windows: {len(X)}")
-print(f"   • Shape of X:    {X.shape}")
+print(f"   • Total Windows: {len(y)}") # Changed to len(y) since X's first dim is no longer N
+print(f"   • Shape of X:    {X.shape} (Window Size, Memory Size, Channels)")
 print(f"   • Memory Size:   ~{X.nbytes / 1024 / 1024 / 1024:.2f} GB")
 
 out_file = os.path.join(NPZ_OUTPUT_DIR, f"master_dataset_{WINDOW_SIZE}s.npz")
