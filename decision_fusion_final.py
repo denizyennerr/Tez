@@ -1,58 +1,73 @@
 import os
 import gc
+import logging
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras import backend as K
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    confusion_matrix
-)
+from sklearn.metrics import roc_auc_score, average_precision_score, confusion_matrix
+
 
 # =============================================================================
-# 1. CONFIGURATION & PATHS
+# 1. CONFIGURATION
 # =============================================================================
-datasets_info = {
-    '0.5s': {'data': 'master_dataset_0.5s.npz', 'models_dir': 'saved_outputs/20260311-144059_0.5s/models'},
-    '1s': {'data': 'master_dataset_1s.npz', 'models_dir': 'saved_outputs/20260304-135510-1s/models'},
-    '2s': {'data': 'master_dataset_2s.npz', 'models_dir': 'saved_outputs/20260303-162053-2s/models'},
-    '4s': {'data': 'master_dataset_4s.npz', 'models_dir': 'saved_outputs/20260304-091718-4s/models'},
-    '5s': {'data': 'master_dataset_5s.npz', 'models_dir': 'saved_outputs/20260309-115134_5s/models'},
-    '10s': {'data': 'master_dataset_10s.npz', 'models_dir': 'saved_outputs/20260309-155522_10s/models'},
+@dataclass(frozen=True)
+class DatasetInfo:
+    data: str
+    models_dir: str
+    weight: float
+
+
+DATASETS_INFO: Dict[str, DatasetInfo] = {
+    '0.5s': DatasetInfo(data='master_dataset_0.5s.npz', models_dir='saved_outputs/20260311-144059_0.5s/models',
+                        weight=1.0),
+    '1s': DatasetInfo(data='master_dataset_1s.npz', models_dir='saved_outputs/20260304-135510-1s/models', weight=3.5),
+    '2s': DatasetInfo(data='master_dataset_2s.npz', models_dir='saved_outputs/20260303-162053-2s/models', weight=1.5),
+    '4s': DatasetInfo(data='master_dataset_4s.npz', models_dir='saved_outputs/20260304-091718-4s/models', weight=0.0),
+    '5s': DatasetInfo(data='master_dataset_5s.npz', models_dir='saved_outputs/20260309-115134_5s/models', weight=0.0),
+    '10s': DatasetInfo(data='master_dataset_10s.npz', models_dir='saved_outputs/20260309-155522_10s/models',
+                       weight=0.0),
 }
 
-output_csv_name = "all_models_performance_comparison_1s_ref_modelweight2.csv"
-
-# Weights based on Eval script insights
-model_weights = {'0.5s': 1.0, '1s': 3.5, '2s': 1.5, '4s': 0.0, '5s': 0.0, '10s': 0.0}
-
-# FIXED A PRIORI CLINICAL THRESHOLD
+REFERENCE_KEY = '1s'
+BATCH_SIZE = 64
 FIXED_THRESHOLD = 0.3
+MIN_MODELS_FOR_ENSEMBLE = 2
 
+OUTPUT_DIR = os.path.join('saved_outputs', 'ensemble_results_final')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+OUTPUT_POOLED_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_pooled_metrics.csv')
+OUTPUT_MACRO_MEAN_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_macro_mean.csv')
+OUTPUT_MACRO_STD_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_macro_std.csv')
+OUTPUT_PER_SUBJECT_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_per_subject.csv')
 
 # =============================================================================
-# 2. CORE FUNCTIONS
+# 2. UTILITIES
 # =============================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s'
+)
+
+
 def window_level_align(coarse_probs: np.ndarray, target_length: int) -> np.ndarray:
-    """Robust alignment of probabilities to a target length using index interpolation."""
+    """Align probabilities to a target length using index interpolation."""
     n_coarse = len(coarse_probs)
     if n_coarse == target_length:
         return coarse_probs.copy()
 
-    fine_indices = np.floor(
-        np.linspace(0, n_coarse, target_length, endpoint=False)
-    ).astype(int)
-
+    fine_indices = np.floor(np.linspace(0, n_coarse, target_length, endpoint=False)).astype(int)
     fine_indices = np.clip(fine_indices, 0, n_coarse - 1)
     return coarse_probs[fine_indices]
 
 
-def calculate_metrics(y_true, y_prob, threshold):
+def calculate_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> Dict[str, float]:
     y_pred = (y_prob >= threshold).astype(int)
 
-    # Handle single-class edge cases
     if len(np.unique(y_true)) > 1:
         auroc = roc_auc_score(y_true, y_prob)
         auprc = average_precision_score(y_true, y_prob)
@@ -69,119 +84,298 @@ def calculate_metrics(y_true, y_prob, threshold):
     f1_score = 2 * (precision * sensitivity) / (precision + sensitivity) if (precision + sensitivity) > 0 else 0.0
 
     return {
-        'Decision Threshold': round(threshold, 4),
-        'AUROC': round(auroc, 4),
-        'AUPRC': round(auprc, 4),
-        'Sensitivity': round(sensitivity, 4),
-        'Specificity': round(specificity, 4),
-        'Balanced Accuracy': round(balanced_acc, 4),
-        'Seizure F1-Score': round(f1_score, 4)
+        'Decision Threshold': round(float(threshold), 4),
+        'AUROC': round(float(auroc), 4),
+        'AUPRC': round(float(auprc), 4),
+        'Sensitivity': round(float(sensitivity), 4),
+        'Specificity': round(float(specificity), 4),
+        'Balanced Accuracy': round(float(balanced_acc), 4),
+        'Seizure F1-Score': round(float(f1_score), 4),
     }
 
 
-# =============================================================================
-# 3. DATA LOADING & PROBABILITY ALIGNMENT
-# =============================================================================
-all_y_true_1s = []
-all_probs_dict = {k: [] for k in datasets_info.keys()}
+def load_reference_subjects(reference_path: str) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, int]]:
+    """Load reference labels (1s) to establish subject list and target lengths."""
+    logging.info('Loading reference dataset: %s', reference_path)
+    ref_data = np.load(reference_path)
+    subjects = np.unique(ref_data['s'])
+    y_true_by_subject: Dict[str, np.ndarray] = {}
+    target_len_by_subject: Dict[str, int] = {}
 
-print("Loading 1s reference data to determine subjects...")
-ref_data = np.load(datasets_info['1s']['data'])
-subjects = np.unique(ref_data['s'])
-del ref_data;
-gc.collect()
+    for subject in subjects:
+        mask = ref_data['s'] == subject
+        y_sub = ref_data['y'][mask]
 
-for subject in subjects:
-    print(f"\n🚀 Processing Subject {subject}...")
+        # FIXED: Cast subject to str instead of int
+        sub_str = str(subject)
+        y_true_by_subject[sub_str] = y_sub
+        target_len_by_subject[sub_str] = len(y_sub)
 
-    # Load 1s target data to determine the target sequence length
-    data_1s = np.load(datasets_info['1s']['data'])
-    mask_1s = (data_1s['s'] == subject)
-    y_test_1s = data_1s['y'][mask_1s]
-    target_len = len(y_test_1s)
-    all_y_true_1s.extend(y_test_1s)
-    del data_1s;
+    del ref_data
     gc.collect()
 
-    for w_name, info in datasets_info.items():
-        data = np.load(info['data'])
-        mask = (data['s'] == subject)
-        X_test = data['X'][mask]
+    return subjects, y_true_by_subject, target_len_by_subject
 
-        model_path = os.path.join(info['models_dir'], f"best_model_subject_{subject}.keras")
 
-        if os.path.exists(model_path):
-            model = load_model(model_path)
-            probs = model.predict(X_test, batch_size=64, verbose=0).ravel()
+def predict_subject_probs(x_subject: np.ndarray, model_path: str) -> np.ndarray:
+    model = load_model(model_path)
+    probs = model.predict(x_subject, batch_size=BATCH_SIZE, verbose=0).ravel()
+    del model
+    K.clear_session()
+    return probs
 
-            aligned_probs = window_level_align(probs, target_len)
-            all_probs_dict[w_name].extend(aligned_probs)
 
-            del model;
-            K.clear_session()
-        else:
-            print(f"  ⚠️ Model missing: {w_name} - Subject {subject}")
-            # Fallback array
-            all_probs_dict[w_name].extend(np.full(target_len, 0.5))
+def soft_ensemble(probs_list: List[np.ndarray]) -> np.ndarray:
+    return np.mean(np.vstack(probs_list), axis=0)
 
-        del data, X_test;
+
+def weighted_soft_ensemble(probs_list: List[np.ndarray], weights: List[float]) -> np.ndarray:
+    weights_arr = np.asarray(weights, dtype=float)
+    if np.sum(weights_arr) == 0:
+        return soft_ensemble(probs_list)
+    return np.average(np.vstack(probs_list), axis=0, weights=weights_arr)
+
+
+def hard_vote_ensemble(probs_list: List[np.ndarray]) -> np.ndarray:
+    votes = (np.vstack(probs_list) >= FIXED_THRESHOLD).astype(int)
+    return np.mean(votes, axis=0)
+
+
+# =============================================================================
+# 3. PREDICTION COLLECTION
+# =============================================================================
+
+def collect_probabilities(
+        subjects: np.ndarray,
+        target_len_by_subject: Dict[str, int],
+        datasets_info: Dict[str, DatasetInfo]
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """Generate aligned probabilities per resolution and subject."""
+    all_probs: Dict[str, Dict[str, np.ndarray]] = {k: {} for k in datasets_info.keys()}
+
+    for res_key, info in datasets_info.items():
+        logging.info('Loading dataset for resolution %s: %s', res_key, info.data)
+
+        # Skip if the dataset file doesn't exist
+        if not os.path.exists(info.data):
+            logging.warning('Missing dataset file: %s', info.data)
+            continue
+
+        data = np.load(info.data)
+        X = data['X']
+        s = data['s']
+
+        for subject in subjects:
+            # FIXED: Cast subject to str
+            sub_str = str(subject)
+            model_path = os.path.join(info.models_dir, f'best_model_subject_{sub_str}.keras')
+            if not os.path.exists(model_path):
+                logging.warning('Missing model for %s subject %s', res_key, sub_str)
+                continue
+
+            mask = s == subject
+            if not np.any(mask):
+                logging.warning('No samples for %s subject %s', res_key, sub_str)
+                continue
+
+            probs_raw = predict_subject_probs(X[mask], model_path)
+            aligned = window_level_align(probs_raw, target_len_by_subject[sub_str])
+            all_probs[res_key][sub_str] = aligned
+
+        del data, X, s
         gc.collect()
 
-# =============================================================================
-# 4. DECISION FUSION & EVALUATION (STRICTLY RIGOROUS)
-# =============================================================================
-print(f"\n{'=' * 65}\nEvaluating Models & Ensembles (Threshold: {FIXED_THRESHOLD})\n{'=' * 65}")
+    return all_probs
 
-y_true = np.array(all_y_true_1s)
-results = []
-
-# --- Individual Models ---
-for w_name in datasets_info.keys():
-    probs = np.array(all_probs_dict[w_name])
-    res = calculate_metrics(y_true, probs, threshold=FIXED_THRESHOLD)
-    res['Model'] = f"{w_name} Individual"
-    results.append(res)
-
-# --- Soft Ensemble (Simple Mean) ---
-soft_probs = np.mean([all_probs_dict[k] for k in datasets_info.keys()], axis=0)
-res_soft = calculate_metrics(y_true, soft_probs, threshold=FIXED_THRESHOLD)
-res_soft['Model'] = "Ensemble (Soft Mean)"
-results.append(res_soft)
-
-# --- Weighted Ensemble ---
-weighted_probs = np.zeros_like(y_true, dtype=float)
-active_weights_sum = sum(model_weights.values())
-
-for k in datasets_info.keys():
-    weighted_probs += np.array(all_probs_dict[k]) * (model_weights[k] / active_weights_sum)
-
-res_weight = calculate_metrics(y_true, weighted_probs, threshold=FIXED_THRESHOLD)
-res_weight['Model'] = "Ensemble (Weighted Soft)"
-results.append(res_weight)
-
-# --- Hard Ensemble (Majority Vote) ---
-hard_votes = np.zeros_like(y_true, dtype=int)
-for k in datasets_info.keys():
-    p = np.array(all_probs_dict[k])
-    # Individual models cast their vote based on the clinical priority threshold of 0.3
-    hard_votes += (p >= FIXED_THRESHOLD).astype(int)
-
-# Normalize votes to pseudo-probabilities for the calculate_metrics function
-hard_probs = hard_votes / len(datasets_info)
-# The final ensemble threshold is rigidly 0.5 (representing a > 50% majority agreement)
-res_hard = calculate_metrics(y_true, hard_probs, threshold=0.5)
-res_hard['Model'] = "Ensemble (Hard Vote)"
-results.append(res_hard)
 
 # =============================================================================
-# 5. EXPORT & SUMMARY
+# 4. EVALUATION
 # =============================================================================
-columns_order = [
-    'Model', 'Decision Threshold', 'AUROC', 'AUPRC',
-    'Sensitivity', 'Specificity', 'Balanced Accuracy', 'Seizure F1-Score'
-]
-df_results = pd.DataFrame(results)[columns_order]
-df_results.to_csv(output_csv_name, index=False)
 
-print(f"\n✅ Results saved to {output_csv_name}")
-print("\n" + df_results.to_string(index=False))
+def build_per_subject_results(
+        subjects: np.ndarray,
+        y_true_by_subject: Dict[str, np.ndarray],
+        probs_by_resolution: Dict[str, Dict[str, np.ndarray]],
+        datasets_info: Dict[str, DatasetInfo]
+) -> List[Dict[str, float]]:
+    results: List[Dict[str, float]] = []
+
+    for subject in subjects:
+        # FIXED: Cast subject to str
+        sub_str = str(subject)
+        y_true = y_true_by_subject[sub_str]
+
+        # Individual models
+        for res_key in datasets_info.keys():
+            if sub_str not in probs_by_resolution[res_key]:
+                continue
+            probs = probs_by_resolution[res_key][sub_str]
+            metrics = calculate_metrics(y_true, probs, threshold=FIXED_THRESHOLD)
+            metrics['Model'] = f'{res_key} Individual'
+            metrics['Subject'] = sub_str
+            results.append(metrics)
+
+        # Ensembles for this subject
+        probs_list = []
+        weights_list = []
+        for res_key, info in datasets_info.items():
+            p = probs_by_resolution[res_key].get(sub_str)
+            if p is None:
+                continue
+            probs_list.append(p)
+            weights_list.append(info.weight)
+
+        if len(probs_list) < MIN_MODELS_FOR_ENSEMBLE:
+            continue
+
+        soft_probs = soft_ensemble(probs_list)
+        soft_metrics = calculate_metrics(y_true, soft_probs, threshold=FIXED_THRESHOLD)
+        soft_metrics['Model'] = 'Ensemble (Soft Mean)'
+        soft_metrics['Subject'] = sub_str
+        results.append(soft_metrics)
+
+        weighted_probs = weighted_soft_ensemble(probs_list, weights_list)
+        weighted_metrics = calculate_metrics(y_true, weighted_probs, threshold=FIXED_THRESHOLD)
+        weighted_metrics['Model'] = 'Ensemble (Weighted Soft)'
+        weighted_metrics['Subject'] = sub_str
+        results.append(weighted_metrics)
+
+        hard_probs = hard_vote_ensemble(probs_list)
+        hard_metrics = calculate_metrics(y_true, hard_probs, threshold=0.5)
+        hard_metrics['Model'] = 'Ensemble (Hard Vote)'
+        hard_metrics['Subject'] = sub_str
+        results.append(hard_metrics)
+
+    return results
+
+
+def build_pooled_results(
+        subjects: np.ndarray,
+        y_true_by_subject: Dict[str, np.ndarray],
+        probs_by_resolution: Dict[str, Dict[str, np.ndarray]],
+        datasets_info: Dict[str, DatasetInfo]
+) -> List[Dict[str, float]]:
+    results: List[Dict[str, float]] = []
+
+    def concat_for_model(model_key: str) -> Tuple[np.ndarray, np.ndarray]:
+        ys, ps = [], []
+        for subject in subjects:
+            # FIXED: Cast subject to str
+            sub_str = str(subject)
+            if sub_str not in probs_by_resolution[model_key]:
+                continue
+            ys.append(y_true_by_subject[sub_str])
+            ps.append(probs_by_resolution[model_key][sub_str])
+
+        # Handle case where no probabilities exist yet
+        if not ys:
+            return np.array([]), np.array([])
+
+        return np.concatenate(ys), np.concatenate(ps)
+
+    # Individual models
+    for res_key in datasets_info.keys():
+        y_true, probs = concat_for_model(res_key)
+        if len(y_true) > 0:
+            metrics = calculate_metrics(y_true, probs, threshold=FIXED_THRESHOLD)
+            metrics['Model'] = f'{res_key} Individual'
+            results.append(metrics)
+
+    # Ensembles
+    ys_all, probs_soft_all, probs_weighted_all, probs_hard_all = [], [], [], []
+    for subject in subjects:
+        # FIXED: Cast subject to str
+        sub_str = str(subject)
+        y_true = y_true_by_subject[sub_str]
+
+        probs_list = []
+        weights_list = []
+        for res_key, info in datasets_info.items():
+            p = probs_by_resolution[res_key].get(sub_str)
+            if p is None:
+                continue
+            probs_list.append(p)
+            weights_list.append(info.weight)
+
+        if len(probs_list) < MIN_MODELS_FOR_ENSEMBLE:
+            continue
+
+        ys_all.append(y_true)
+        probs_soft_all.append(soft_ensemble(probs_list))
+        probs_weighted_all.append(weighted_soft_ensemble(probs_list, weights_list))
+        probs_hard_all.append(hard_vote_ensemble(probs_list))
+
+    if ys_all:
+        y_all = np.concatenate(ys_all)
+
+        soft_metrics = calculate_metrics(y_all, np.concatenate(probs_soft_all), threshold=FIXED_THRESHOLD)
+        soft_metrics['Model'] = 'Ensemble (Soft Mean)'
+        results.append(soft_metrics)
+
+        weighted_metrics = calculate_metrics(y_all, np.concatenate(probs_weighted_all), threshold=FIXED_THRESHOLD)
+        weighted_metrics['Model'] = 'Ensemble (Weighted Soft)'
+        results.append(weighted_metrics)
+
+        hard_metrics = calculate_metrics(y_all, np.concatenate(probs_hard_all), threshold=0.5)
+        hard_metrics['Model'] = 'Ensemble (Hard Vote)'
+        results.append(hard_metrics)
+
+    return results
+
+
+def build_macro_summary(per_subject_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    metric_cols = [
+        'Decision Threshold', 'AUROC', 'AUPRC',
+        'Sensitivity', 'Specificity', 'Balanced Accuracy', 'Seizure F1-Score'
+    ]
+    grouped = per_subject_df.groupby('Model', dropna=False)
+    mean_df = grouped[metric_cols].mean().reset_index()
+    std_df = grouped[metric_cols].std().reset_index()
+
+    counts = grouped.size().reset_index(name='N_Subjects')
+    mean_df = mean_df.merge(counts, on='Model')
+    std_df = std_df.merge(counts, on='Model')
+
+    cols = ['Model', 'N_Subjects'] + metric_cols
+    return mean_df[cols], std_df[cols]
+
+
+# =============================================================================
+# 5. MAIN
+# =============================================================================
+
+def main() -> None:
+    if REFERENCE_KEY not in DATASETS_INFO:
+        raise KeyError(f'Reference key {REFERENCE_KEY} not found in DATASETS_INFO')
+
+    subjects, y_true_by_subject, target_len_by_subject = load_reference_subjects(
+        DATASETS_INFO[REFERENCE_KEY].data
+    )
+
+    probs_by_resolution = collect_probabilities(subjects, target_len_by_subject, DATASETS_INFO)
+
+    per_subject_results = build_per_subject_results(
+        subjects, y_true_by_subject, probs_by_resolution, DATASETS_INFO
+    )
+    per_subject_df = pd.DataFrame(per_subject_results)
+    per_subject_df.to_csv(OUTPUT_PER_SUBJECT_CSV, index=False)
+
+    pooled_results = build_pooled_results(
+        subjects, y_true_by_subject, probs_by_resolution, DATASETS_INFO
+    )
+    pooled_df = pd.DataFrame(pooled_results)
+    pooled_df.to_csv(OUTPUT_POOLED_CSV, index=False)
+
+    if not per_subject_df.empty:
+        macro_mean_df, macro_std_df = build_macro_summary(per_subject_df)
+        macro_mean_df.to_csv(OUTPUT_MACRO_MEAN_CSV, index=False)
+        macro_std_df.to_csv(OUTPUT_MACRO_STD_CSV, index=False)
+
+    logging.info('Saved per-subject metrics: %s', OUTPUT_PER_SUBJECT_CSV)
+    logging.info('Saved pooled metrics: %s', OUTPUT_POOLED_CSV)
+    logging.info('Saved macro-mean metrics: %s', OUTPUT_MACRO_MEAN_CSV)
+    logging.info('Saved macro-std metrics: %s', OUTPUT_MACRO_STD_CSV)
+
+
+if __name__ == '__main__':
+    main()
