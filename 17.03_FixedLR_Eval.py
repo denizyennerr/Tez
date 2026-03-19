@@ -20,12 +20,12 @@ from sklearn.metrics import (
 )
 from IPython.display import display
 
-TIMESTAMP = "20260317-172943_0.5s"
+TIMESTAMP = "saved_outputs_play/20260318-152116_0.5s"
 
 suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
 
 dataset_path = os.path.join(f'master_dataset_{suffix}.npz')
-output_dir = os.path.join("saved_outputs", TIMESTAMP)
+output_dir = TIMESTAMP
 
 models_dir = os.path.join(output_dir, "models")
 histories_dir = os.path.join(output_dir, "histories")

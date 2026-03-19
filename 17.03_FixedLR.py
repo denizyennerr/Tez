@@ -32,70 +32,73 @@ EPOCHS = 100
 DECISION_THRESHOLD = 0.3
 
 dataset_paths = [
-    'processed_master_datasets/master_dataset_0.5s.npz',
-    'processed_master_datasets/master_dataset_1s.npz',
-    'processed_master_datasets/master_dataset_2s.npz',
-    'processed_master_datasets/master_dataset_4s.npz',
-    'processed_master_datasets/master_dataset_5s.npz',
-    'processed_master_datasets/master_dataset_10s.npz'
+    #'processed_master_datasets/master_dataset_0.5s.npz',
+    'processed_master_datasets/master_dataset_1.0s.npz',
+    'processed_master_datasets/master_dataset_2.0s.npz',
+    'processed_master_datasets/master_dataset_4.0s.npz',
+    'processed_master_datasets/master_dataset_5.0s.npz',
+    'processed_master_datasets/master_dataset_10.0s.npz'
 ]
 
 
 # %% Pure CNN Model Definition
 def build_seizure_model_cnn(input_shape, learning_rate=0.001, threshold=0.3):
     """
-    Upgraded Pure CNN using LayerNormalization for Patient-to-Patient robustness.
+    Pure CNN model optimized for throughput.
+    GlobalAveragePooling1D ensures parameter count stays constant regardless of window size.
     """
     inputs = layers.Input(shape=input_shape, name='eeg_input')
 
     # Block 1
     x = layers.Conv1D(32, kernel_size=3, padding='same')(inputs)
-    x = layers.LayerNormalization()(x) # <-- CHANGED FROM BATCH NORM
+    x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = layers.MaxPooling1D(pool_size=2)(x)
     x = layers.Dropout(0.2)(x)
 
     # Block 2
     x = layers.Conv1D(64, kernel_size=5, padding='same')(x)
-    x = layers.LayerNormalization()(x) # <-- CHANGED FROM BATCH NORM
+    x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = layers.MaxPooling1D(pool_size=2)(x)
     x = layers.Dropout(0.2)(x)
 
     # Block 3
     x = layers.Conv1D(128, kernel_size=7, padding='same')(x)
-    x = layers.LayerNormalization()(x) # <-- CHANGED FROM BATCH NORM
+    x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = layers.MaxPooling1D(pool_size=2)(x)
     x = layers.Dropout(0.3)(x)
 
     # Block 4 - Deep feature extraction
     x = layers.Conv1D(256, kernel_size=7, padding='same')(x)
-    x = layers.LayerNormalization()(x) # <-- CHANGED FROM BATCH NORM
+    x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = layers.Dropout(0.3)(x)
 
+    # Pooling - KEEPS PARAMETERS CONSTANT ACROSS DIFFERENT WINDOW SIZES
     x = layers.GlobalAveragePooling1D()(x)
 
     # Classification Head
     x = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.01))(x)
-    x = layers.LayerNormalization()(x) # <-- CHANGED FROM BATCH NORM
+    x = layers.BatchNormalization()(x)
     x = layers.Dropout(0.5)(x)
 
     x = layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(0.01))(x)
     x = layers.Dropout(0.3)(x)
 
-    # Output
+    # Output MUST be float32 when using mixed precision
     outputs = layers.Dense(1, activation='sigmoid', dtype='float32', name='seizure_output')(x)
 
     model = Model(inputs=inputs, outputs=outputs, name='SeizureDetector_PureCNN')
 
+    # Optimizer fixed learning rate (No ReduceLROnPlateau will be used)
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
         loss='binary_crossentropy',
         metrics=[
             tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=threshold),
-            tf.keras.metrics.AUC(name='auc', curve='PR'), # <-- Track PR-AUC instead of ROC-AUC
+            tf.keras.metrics.AUC(name='auc'),  # AUC is threshold-agnostic
             tf.keras.metrics.Precision(name='precision', thresholds=threshold),
             tf.keras.metrics.Recall(name='recall', thresholds=threshold)
         ]
@@ -107,9 +110,9 @@ def build_seizure_model_cnn(input_shape, learning_rate=0.001, threshold=0.3):
 # ==========================================
 
 for dataset_path in dataset_paths:
-    print("\n" + "=" * 60)
+    print("\n" + "="*60)
     print(f"🚀 STARTING PROCESSING FOR: {dataset_path}")
-    print("=" * 60)
+    print("="*60)
 
     # Dynamically extract suffix and create unique timestamp/folders for this dataset
     file_name = os.path.splitext(os.path.basename(dataset_path))[0]
@@ -139,28 +142,17 @@ for dataset_path in dataset_paths:
     print(f"Outputs will be saved to: {output_dir}")
 
     # %% LOSO Training Loop
-    # Keep track of fold number for reproducible seeds
-    fold_idx = 0
-
     for train_idx, test_idx in logo.split(X, y, groups=groups):
         X_train_full, X_test = X[train_idx], X[test_idx]
         y_train_full, y_test = y[train_idx], y[test_idx]
         groups_train = groups[train_idx]
 
         current_test_subject = groups[test_idx][0]
-        print(f"\n🚀 Fold {fold_idx + 1}: Holding out Subject {current_test_subject} for Testing (Dataset: {suffix})")
+        print(f"\n🚀 Training holding out Subject: {current_test_subject} (Dataset: {suffix})")
 
-        # =========================================================================
-        # 🟡 FIXED: RANDOMIZED VALIDATION SUBJECT SELECTION
-        # =========================================================================
+        # Subject-level Validation Split
         unique_train_subjects = np.unique(groups_train)
-
-        # Set a reproducible seed based on the fold index
-        np.random.seed(42 + fold_idx)
-        val_subject = np.random.choice(unique_train_subjects)
-
-        print(f"   -> Selected Subject {val_subject} for Validation.")
-
+        val_subject = unique_train_subjects[0]
         val_mask = (groups_train == val_subject)
         train_mask = ~val_mask
 
@@ -186,11 +178,9 @@ for dataset_path in dataset_paths:
             neg_ds = tf.data.Dataset.from_tensor_slices((X_train_neg, y_train_neg))
             val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val))
 
-
         # Cast types dynamically inside the pipeline using .map()
         def cast_to_float32(x, y):
             return tf.cast(x, tf.float32), tf.cast(y, tf.float32)
-
 
         pos_ds = pos_ds.map(cast_to_float32, num_parallel_calls=tf.data.AUTOTUNE)
         if len(pos_idx) > 0:
@@ -217,13 +207,10 @@ for dataset_path in dataset_paths:
         # Validation dataset (Sequential, imbalanced, dynamically cast)
         val_dataset = val_dataset.map(cast_to_float32, num_parallel_calls=tf.data.AUTOTUNE)
         val_dataset = val_dataset.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+        # =========================================================================
 
-        # =========================================================================
-        # 🔴 FIXED: BUILDING/COMPILING MODEL INSIDE STRATEGY SCOPE
-        # =========================================================================
-        with strategy.scope():
-            # Now TensorFlow knows to distribute this model across your detected GPUs
-            model = build_seizure_model_cnn(input_shape, learning_rate=LEARNING_RATE, threshold=DECISION_THRESHOLD)
+        # Build model with fixed learning rate
+        model = build_seizure_model_cnn(input_shape, learning_rate=LEARNING_RATE, threshold=DECISION_THRESHOLD)
 
         fold_log_dir = os.path.join(log_dir, f"subject_{current_test_subject}")
         model_save_path = os.path.join(models_dir, f"best_model_subject_{current_test_subject}.keras")
@@ -249,9 +236,6 @@ for dataset_path in dataset_paths:
         history_csv_path = os.path.join(histories_dir, f"history_subject_{current_test_subject}.csv")
         history_df.to_csv(history_csv_path, index=False)
         print(f"✅ Saved history for subject {current_test_subject} (Dataset {suffix})")
-
-        # Increment fold index
-        fold_idx += 1
 
         # ==========================================
         # 🧹 SENIOR DS MEMORY CLEANUP (Inner Loop)
