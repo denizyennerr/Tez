@@ -112,8 +112,8 @@ class SafeModelCheckpoint(Callback):
 # %% Constants & Dataset Paths
 BATCH_SIZE = 128
 LEARNING_RATE = 0.0001
-EPOCHS = 50
-DECISION_THRESHOLD = 0.5
+EPOCHS = 100
+DECISION_THRESHOLD = 0.30
 
 dataset_paths = [
     'processed_master_datasets/master_dataset_0.5s.npz',
@@ -274,7 +274,7 @@ for dataset_path in dataset_paths:
 
         balanced_train_ds = tf.data.Dataset.sample_from_datasets(
             [pos_ds, neg_ds],
-            weights=[0.5, 0.5]
+            weights=[0.3, 0.7]
         )
 
         if len(pos_idx) > 0:
@@ -304,8 +304,7 @@ for dataset_path in dataset_paths:
             EarlyStopping(monitor='val_balanced_accuracy', mode='max', patience=25, restore_best_weights=True,
                           verbose=1),
             TensorBoard(log_dir=fold_log_dir, histogram_freq=1),
-            # Updated SafeModelCheckpoint to monitor the new metric and seek the maximum
-            SafeModelCheckpoint(filepath=model_save_path, monitor='val_balanced_accuracy', mode='max', verbose=0)
+            SafeModelCheckpoint(filepath=model_save_path, monitor='val_auc', mode='max', verbose=0)
         ]
 
         history = model.fit(
