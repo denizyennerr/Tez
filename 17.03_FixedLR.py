@@ -32,9 +32,9 @@ EPOCHS = 100
 DECISION_THRESHOLD = 0.3
 
 dataset_paths = [
-    'processed_master_datasets/master_dataset_0.5s.npz',
-    'processed_master_datasets/master_dataset_1.0s.npz',
-    'processed_master_datasets/master_dataset_2.0s.npz',
+    #'processed_master_datasets/master_dataset_0.5s.npz',
+    #'processed_master_datasets/master_dataset_1.0s.npz',
+    #'processed_master_datasets/master_dataset_2.0s.npz',
     'processed_master_datasets/master_dataset_4.0s.npz',
     'processed_master_datasets/master_dataset_5.0s.npz',
     'processed_master_datasets/master_dataset_10.0s.npz'
