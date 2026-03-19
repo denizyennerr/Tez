@@ -29,10 +29,10 @@ DATASETS_INFO: Dict[str, DatasetInfo] = {
         models_dir='saved_outputs_play/20260319-103831_1.0s/models', weight=3.5),
     '2s': DatasetInfo(
         data='processed_master_datasets/master_dataset_2.0s.npz',
-        models_dir='saved_outputs_play/20260319-122434_2.0s/models', weight=1.5)
-    #'4s': DatasetInfo(
-        #data='processed_master_datasets/master_dataset_4.0s.npz',
-        #models_dir='saved_outputs_play/20260319-132428_4.0s/models', weight=0.0),
+        models_dir='saved_outputs_play/20260319-122434_2.0s/models', weight=1.5),
+    '4s': DatasetInfo(
+        data='processed_master_datasets/master_dataset_4.0s.npz',
+        models_dir='saved_outputs_play/20260319-135739_4.0s/models', weight=0.0),
     #'5s': DatasetInfo(
         #data='processed_master_datasets/master_dataset_5.0s.npz',
         #models_dir='saved_outputs/20260309-115134_5s/models', weight=0.0),
