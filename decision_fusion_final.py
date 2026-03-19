@@ -29,16 +29,16 @@ DATASETS_INFO: Dict[str, DatasetInfo] = {
         models_dir='saved_outputs_play/20260319-103831_1.0s/models', weight=3.5),
     '2s': DatasetInfo(
         data='processed_master_datasets/master_dataset_2.0s.npz',
-        models_dir='saved_outputs/20260303-162053-2s/models', weight=1.5),
-    '4s': DatasetInfo(
-        data='processed_master_datasets/master_dataset_4.0s.npz',
-        models_dir='saved_outputs/20260304-091718-4s/models', weight=0.0),
-    '5s': DatasetInfo(
-        data='processed_master_datasets/master_dataset_5.0s.npz',
-        models_dir='saved_outputs/20260309-115134_5s/models', weight=0.0),
-    '10s': DatasetInfo(
-        data='processed_master_datasets/master_dataset_10.0s.npz',
-        models_dir='saved_outputs/20260309-155522_10s/models', weight=0.0),
+        models_dir='saved_outputs_play/20260319-122434_2.0s/models', weight=1.5)
+    #'4s': DatasetInfo(
+        #data='processed_master_datasets/master_dataset_4.0s.npz',
+        #models_dir='saved_outputs_play/20260319-132428_4.0s/models', weight=0.0),
+    #'5s': DatasetInfo(
+        #data='processed_master_datasets/master_dataset_5.0s.npz',
+        #models_dir='saved_outputs/20260309-115134_5s/models', weight=0.0),
+    #'10s': DatasetInfo(
+        #data='processed_master_datasets/master_dataset_10.0s.npz',
+        #models_dir='saved_outputs/20260309-155522_10s/models', weight=0.0),
 }
 
 REFERENCE_KEY = '1s'
@@ -46,7 +46,7 @@ BATCH_SIZE = 64
 FIXED_THRESHOLD = 0.3
 MIN_MODELS_FOR_ENSEMBLE = 2
 
-OUTPUT_DIR = os.path.join('saved_outputs', 'ensemble_results_final')
+OUTPUT_DIR = os.path.join('saved_outputs_play', 'ensemble_results_final')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 OUTPUT_POOLED_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_pooled_metrics.csv')
@@ -172,6 +172,7 @@ def collect_probabilities(
 
         data = np.load(info.data)
         X = data['X']
+        X = np.swapaxes(X, 0, 1)
         s = data['s']
 
         for subject in subjects:

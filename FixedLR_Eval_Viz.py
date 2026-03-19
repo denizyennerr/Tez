@@ -11,11 +11,11 @@ from matplotlib.patches import FancyBboxPatch
 # =============================================================================
 # ── CONFIGURATION  ────────────────────────────────────────────────────────────
 # =============================================================================
-TIMESTAMP = "saved_outputs_play/20260318-152116_0.5s"
+TIMESTAMP = "saved_outputs_play/20260319-122434_2.0s"
 
 suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
 
-dataset_path = os.path.join(f'master_dataset_{suffix}.npz')
+dataset_path = os.path.join(f'processed_master_datasets/master_dataset_{suffix}.npz')
 output_dir = TIMESTAMP
 
 # Path to CSV produced by the evaluation script

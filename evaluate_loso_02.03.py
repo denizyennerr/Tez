@@ -19,9 +19,12 @@ from sklearn.metrics import (
 from IPython.display import display
 
 # --- UPDATE THESE TO MATCH YOUR TRAINING RUN ---
-TIMESTAMP = "20260301-192746"
-dataset_path = "master_dataset_2s.npz"
-output_dir = os.path.join("saved_outputs", TIMESTAMP)
+TIMESTAMP = "saved_outputs_play/20260318-152116_0.5s"
+
+suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
+
+dataset_path = os.path.join(f'master_dataset_{suffix}.npz')
+output_dir = TIMESTAMP
 models_dir = os.path.join(output_dir, "models")
 histories_dir = os.path.join(output_dir, "histories")
 plots_dir = os.path.join(output_dir, "plots")

@@ -6,8 +6,9 @@ import seaborn as sns
 # =============================================================================
 # ⚙️ Configuration
 # =============================================================================
-INPUT_CSV = "all_models_performance_comparison_1s_ref_modelweight.csv"
-OUTPUT_DIR = os.path.join("saved_outputs", "ensemble_results", "plots")
+# Updated to point to the correct ensemble metrics file
+INPUT_CSV = "saved_outputs_play/ensemble_results_final/decision_fusion_macro_mean.csv"
+OUTPUT_DIR = os.path.join("saved_outputs_play", "ensemble_results_final", "plots")
 
 # Create output directory if it doesn't exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -23,9 +24,9 @@ if not os.path.exists(INPUT_CSV):
 
 df = pd.read_csv(INPUT_CSV)
 
-# Drop 'Decision Threshold' as it's a constant and not a performance metric
-if 'Decision Threshold' in df.columns:
-    df = df.drop(columns=['Decision Threshold'])
+# Drop non-metric columns so they don't appear in the plots
+columns_to_drop = ['Decision Threshold', 'N_Subjects']
+df = df.drop(columns=[col for col in columns_to_drop if col in df.columns])
 
 # Set the 'Model' column as the index for easier plotting
 df_metrics = df.set_index('Model')

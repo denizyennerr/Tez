@@ -24,7 +24,7 @@ TIMESTAMP = "saved_outputs_play/20260318-152116_0.5s"
 
 suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
 
-dataset_path = os.path.join(f'master_dataset_{suffix}.npz')
+dataset_path = os.path.join(f'processed_master_datasets/master_dataset_{suffix}.npz')
 output_dir = TIMESTAMP
 
 models_dir = os.path.join(output_dir, "models")
@@ -287,6 +287,7 @@ def plot_secondary_metrics(summary_df, save_path, DECISION_THRESHOLD=0.3):
 print(f"Loading dataset from: {dataset_path}")
 data = np.load(dataset_path)
 X, y, groups = data["X"], data["y"], data["s"]
+X = np.swapaxes(X, 0, 1)
 logo = LeaveOneGroupOut()
 
 # =============================================================================
