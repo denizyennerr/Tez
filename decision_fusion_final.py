@@ -10,7 +10,6 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras import backend as K
 from sklearn.metrics import roc_auc_score, average_precision_score, confusion_matrix
 
-
 # =============================================================================
 # 1. CONFIGURATION
 # =============================================================================
@@ -20,16 +19,26 @@ class DatasetInfo:
     models_dir: str
     weight: float
 
-
+# UPDATED: Added 'processed_master_datasets/' prefix and fixed '.0s' filenames
 DATASETS_INFO: Dict[str, DatasetInfo] = {
-    '0.5s': DatasetInfo(data='master_dataset_0.5s.npz', models_dir='saved_outputs/20260311-144059_0.5s/models',
-                        weight=1.0),
-    '1s': DatasetInfo(data='master_dataset_1s.npz', models_dir='saved_outputs/20260304-135510-1s/models', weight=3.5),
-    '2s': DatasetInfo(data='master_dataset_2s.npz', models_dir='saved_outputs/20260303-162053-2s/models', weight=1.5),
-    '4s': DatasetInfo(data='master_dataset_4s.npz', models_dir='saved_outputs/20260304-091718-4s/models', weight=0.0),
-    '5s': DatasetInfo(data='master_dataset_5s.npz', models_dir='saved_outputs/20260309-115134_5s/models', weight=0.0),
-    '10s': DatasetInfo(data='master_dataset_10s.npz', models_dir='saved_outputs/20260309-155522_10s/models',
-                       weight=0.0),
+    '0.5s': DatasetInfo(
+        data='processed_master_datasets/master_dataset_0.5s.npz',
+        models_dir='saved_outputs_play/20260318-152116_0.5s/models', weight=1.0),
+    '1s': DatasetInfo(
+        data='processed_master_datasets/master_dataset_1.0s.npz',
+        models_dir='saved_outputs_play/20260319-103831_1.0s/models', weight=3.5),
+    '2s': DatasetInfo(
+        data='processed_master_datasets/master_dataset_2.0s.npz',
+        models_dir='saved_outputs/20260303-162053-2s/models', weight=1.5),
+    '4s': DatasetInfo(
+        data='processed_master_datasets/master_dataset_4.0s.npz',
+        models_dir='saved_outputs/20260304-091718-4s/models', weight=0.0),
+    '5s': DatasetInfo(
+        data='processed_master_datasets/master_dataset_5.0s.npz',
+        models_dir='saved_outputs/20260309-115134_5s/models', weight=0.0),
+    '10s': DatasetInfo(
+        data='processed_master_datasets/master_dataset_10.0s.npz',
+        models_dir='saved_outputs/20260309-155522_10s/models', weight=0.0),
 }
 
 REFERENCE_KEY = '1s'

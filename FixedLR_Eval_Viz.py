@@ -11,15 +11,18 @@ from matplotlib.patches import FancyBboxPatch
 # =============================================================================
 # ── CONFIGURATION  ────────────────────────────────────────────────────────────
 # =============================================================================
-TIMESTAMP   = "20260311-144059_0.5s"
-OUTPUT_DIR  = os.path.join("saved_outputs", TIMESTAMP)
-suffix = TIMESTAMP.split('-')[-1]
+TIMESTAMP = "saved_outputs_play/20260318-152116_0.5s"
+
+suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
+
+dataset_path = os.path.join(f'master_dataset_{suffix}.npz')
+output_dir = TIMESTAMP
 
 # Path to CSV produced by the evaluation script
-SUMMARY_CSV = os.path.join(OUTPUT_DIR, f"overall_loso_summary-{suffix}.csv")
+SUMMARY_CSV = os.path.join(output_dir, f"overall_loso_summary-{suffix}.csv")
 
 # Where to save the output figure
-OUTPUT_FIG  = os.path.join(OUTPUT_DIR, "plots", f"loso_results_table_{suffix}.png")
+OUTPUT_FIG  = os.path.join(output_dir, "plots", f"loso_results_table_{suffix}.png")
 
 DECISION_THRESHOLD = 0.3
 
@@ -375,7 +378,7 @@ def print_console_table(df: pd.DataFrame) -> None:
 # =============================================================================
 if __name__ == "__main__":
     # Pass the folder directory instead of the exact CSV path
-    summary_df = load_summary(OUTPUT_DIR)
+    summary_df = load_summary(output_dir)
 
     print_console_table(summary_df)
 
@@ -383,6 +386,6 @@ if __name__ == "__main__":
 
     # Optional: also export a clean formatted CSV
     export_cols = ["subject"] + [m[0] for m in METRICS]
-    export_path = os.path.join(OUTPUT_DIR, f"loso_results_table_{suffix}.csv")
+    export_path = os.path.join(output_dir, f"loso_results_table_{suffix}.csv")
     summary_df[export_cols].round(4).to_csv(export_path, index=False)
     print(f"✅  Formatted CSV saved → {export_path}")
