@@ -302,7 +302,7 @@ for dataset_path in dataset_paths:
         model_save_path = os.path.abspath(os.path.join(models_dir, f"best_model_subject_{current_test_subject}.keras"))
 
         callbacks = [
-            EarlyStopping(monitor='val_balanced_accuracy', mode='max', patience=10, restore_best_weights=True,
+            EarlyStopping(monitor='val_balanced_accuracy', mode='max', patience=25, restore_best_weights=True,
                           verbose=1),
             TensorBoard(log_dir=fold_log_dir, histogram_freq=0),  # I/O darboğazı çözüldü
             SafeModelCheckpoint(filepath=model_save_path, monitor='val_auc', mode='max', verbose=0)
