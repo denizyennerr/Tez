@@ -24,22 +24,22 @@ class DatasetInfo:
 DATASETS_INFO: Dict[str, DatasetInfo] = {
     '0.5s': DatasetInfo(
         data='processed_master_datasets/master_dataset_0.5s.npz',
-        models_dir='saved_outputs_play/20260321-163016_0.5s/models', weight=1.0),
+        models_dir='saved_outputs_play/20260323-163632_0.5s/models', weight=1.0),
     '1.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_1.0s.npz',
-        models_dir='saved_outputs_play/20260321-195347_1.0s/models', weight=1.0),
+        models_dir='saved_outputs_play/20260323-201436_1.0s/models', weight=1.0),
     '2.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_2.0s.npz',
-        models_dir='saved_outputs_play/20260321-221231_2.0s/models', weight=1.0),
+        models_dir='saved_outputs_play/20260323-220314_2.0s/models', weight=1.0),
     '4.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_4.0s.npz',
-        models_dir='saved_outputs_play/20260321-234035_4.0s/models', weight=1.0),
+        models_dir='saved_outputs_play/20260323-224227_4.0s/models', weight=1.0),
     '5.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_5.0s.npz',
-        models_dir='saved_outputs_play/20260322-005516_5.0s/models', weight=1.0),
+        models_dir='saved_outputs_play/20260323-231310_5.0s/models', weight=1.0),
     '10.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_10.0s.npz',
-        models_dir='saved_outputs_play/20260322-020024_10.0s/models', weight=1.0),
+        models_dir='saved_outputs_play/20260323-234451_10.0s/models', weight=1.0),
 }
 
 REFERENCE_KEY = '0.5s'
