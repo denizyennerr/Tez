@@ -45,25 +45,13 @@ DATASETS_INFO: Dict[str, DatasetInfo] = {
 REFERENCE_KEY = '0.5s'
 BATCH_SIZE = 128
 
-# Klinik hedef: nöbetlerin en az bu oranını yakala
 TARGET_SENSITIVITY = 0.80
-
-# Güvenlik tabanı: precision bu değerin altına düşmesin
-# (tamamen sıfır alarmlarla dolmasın diye)
 MIN_PRECISION_FLOOR = 0.10
-
-# Global fallback eşik — herhangi bir hasta için threshold bulunamazsa kullan
-FIXED_THRESHOLD = 0.35  # 0.50'den düşürüldü; klinik öncelik Sensitivity
-
+FIXED_THRESHOLD = 0.35
 MIN_MODELS_FOR_ENSEMBLE = 2
-
-# Temporal smoothing pencere boyutu (pencere sayısı cinsinden).
-# 0.5s referans çözünürlüğünde 5 pencere = 2.5 saniyelik yumuşatma.
-# Kısa süreli (~1-2s) izole false positive'ler bastırılır; gerçek nöbet
-# sinyalleri (>3s) korunur.
 TEMPORAL_SMOOTH_WINDOW = 5
 
-OUTPUT_DIR = os.path.join('saved_outputs_play', 'ensemble_results_sensitivity_optimized')
+OUTPUT_DIR = os.path.join('saved_outputs_play', 'ensemble_results_sensitivity')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 OUTPUT_POOLED_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_pooled_metrics.csv')

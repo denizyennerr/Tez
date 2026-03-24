@@ -6,8 +6,8 @@ import seaborn as sns
 # =============================================================================
 # ⚙️ Configuration
 # =============================================================================
-RESULTS_CSV = "saved_outputs/all_models_performance_comparison.csv"
-OUTPUT_DIR = os.path.join("saved_outputs", "ensemble_results", "plots")
+RESULTS_CSV = "saved_outputs_play/ensemble_results_rigorous/decision_fusion_macro_mean.csv"
+OUTPUT_DIR = os.path.join("saved_outputs_play", "ensemble_results_rigorous", "plots")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -21,6 +21,7 @@ if not os.path.exists(RESULTS_CSV):
     raise FileNotFoundError(f"Could not find {RESULTS_CSV}. Please ensure it is in the correct directory.")
 
 df = pd.read_csv(RESULTS_CSV)
+df= df.drop(columns=['Decision Threshold','N_Subjects'], axis=1)
 
 # Melt DataFrame for Seaborn plotting (Grouped Bar Chart format)
 df_melted = df.melt(id_vars=["Model"], var_name="Metric", value_name="Score")
