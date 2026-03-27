@@ -51,7 +51,7 @@ FIXED_THRESHOLD = 0.35
 MIN_MODELS_FOR_ENSEMBLE = 2
 TEMPORAL_SMOOTH_WINDOW = 5
 
-OUTPUT_DIR = os.path.join('saved_outputs_play', 'ensemble_results_sensitivity')
+OUTPUT_DIR = os.path.join('saved_outputs_play', 'ensemble_results_final')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 OUTPUT_POOLED_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_pooled_metrics.csv')
@@ -417,7 +417,7 @@ def build_per_subject_results(
         smoothed_probs = temporal_smooth_probs(soft_probs)
 
         sens_opt_metrics = calculate_metrics(y_true, smoothed_probs, threshold=opt_thr)
-        sens_opt_metrics['Model'] = 'Ensemble (Sensitivity-Optimized)'
+        sens_opt_metrics['Model'] = 'Ensemble (Sen)'
         sens_opt_metrics['Subject'] = sub_str
         results.append(sens_opt_metrics)
 

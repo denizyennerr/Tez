@@ -109,7 +109,7 @@ class SafeModelCheckpoint(Callback):
 BATCH_SIZE = 128
 LEARNING_RATE = 1e-4
 EPOCHS = 100
-DECISION_THRESHOLD = 0.50  # Precision'ı artırmak için 0.50
+DECISION_THRESHOLD = 0.50
 
 dataset_paths = [
     'processed_master_datasets/master_dataset_0.5s.npz',

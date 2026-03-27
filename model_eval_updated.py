@@ -20,9 +20,10 @@ from sklearn.metrics import (
 )
 from IPython.display import display
 
-TIMESTAMP = "saved_outputs_play/20260323-201436_1.0s"
+TIMESTAMP = "saved_outputs_hybrid/20260325-144433_10.0s_CNN_LSTM_ATTENTION"
 
-suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
+# suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
+suffix = TIMESTAMP.split('/')[-1].split('_')[1]
 
 dataset_path = os.path.join(f'processed_master_datasets/master_dataset_{suffix}.npz')
 output_dir = TIMESTAMP
@@ -75,19 +76,44 @@ def plot_average_training_history(avg_history_df, save_path):
     fig, axs = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle("Average Training History Across All Subjects", fontsize=16, fontweight="bold")
 
+    # Clean column names just in case there are trailing spaces
+    avg_history_df.columns = avg_history_df.columns.str.strip()
+
+    # [FIX] Fuzzy search for accuracy columns
+    train_acc_col = next((col for col in avg_history_df.columns if 'acc' in col.lower() and 'val' not in col.lower()),
+                         None)
+    val_acc_col = next((col for col in avg_history_df.columns if 'acc' in col.lower() and 'val' in col.lower()), None)
+
     # Plot Accuracy
-    if "accuracy" in avg_history_df.columns:
-        axs[0].plot(avg_history_df["accuracy"], label="Train Accuracy", color="#1f77b4", lw=2)
-        axs[0].plot(avg_history_df["val_accuracy"], label="Validation Accuracy", color="#ff7f0e", lw=2)
+    if train_acc_col:
+        axs[0].plot(avg_history_df[train_acc_col], label="Train Accuracy", color="#1f77b4", lw=2)
+    if val_acc_col:
+        axs[0].plot(avg_history_df[val_acc_col], label="Validation Accuracy", color="#ff7f0e", lw=2)
+
+    if not train_acc_col and not val_acc_col:
+        # If still missing, print available columns directly on the plot for debugging
+        cols_str = "\n".join(avg_history_df.columns)
+        axs[0].text(0.5, 0.5, f"Accuracy metric not found.\nAvailable columns:\n{cols_str}",
+                    horizontalalignment='center', verticalalignment='center',
+                    transform=axs[0].transAxes, color="gray", fontsize=9)
+
     axs[0].set_title("Average Model Accuracy")
     axs[0].set_ylabel("Accuracy")
     axs[0].set_xlabel("Epoch")
     axs[0].legend(loc="lower right")
     axs[0].grid(True, linestyle="--", alpha=0.6)
 
-    # Plot Loss
-    axs[1].plot(avg_history_df["loss"], label="Train Loss", color="#1f77b4", lw=2)
-    axs[1].plot(avg_history_df["val_loss"], label="Validation Loss", color="#ff7f0e", lw=2)
+    # Plot Loss (Loss is generally consistently named "loss" and "val_loss")
+    train_loss_col = next((col for col in avg_history_df.columns if 'loss' in col.lower() and 'val' not in col.lower()),
+                          "loss")
+    val_loss_col = next((col for col in avg_history_df.columns if 'loss' in col.lower() and 'val' in col.lower()),
+                        "val_loss")
+
+    if train_loss_col in avg_history_df.columns:
+        axs[1].plot(avg_history_df[train_loss_col], label="Train Loss", color="#1f77b4", lw=2)
+    if val_loss_col in avg_history_df.columns:
+        axs[1].plot(avg_history_df[val_loss_col], label="Validation Loss", color="#ff7f0e", lw=2)
+
     axs[1].set_title("Average Model Loss (Binary Cross-Entropy)")
     axs[1].set_ylabel("Loss")
     axs[1].set_xlabel("Epoch")
@@ -105,17 +131,42 @@ def plot_training_history(history_df, subject, save_path):
     fig, axs = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle(f"Training History | Subject: {subject}", fontsize=16, fontweight="bold")
 
-    if "accuracy" in history_df.columns:
-        axs[0].plot(history_df["accuracy"], label="Train", color="#1f77b4", lw=2)
-        axs[0].plot(history_df["val_accuracy"], label="Validation", color="#ff7f0e", lw=2)
+    # Clean column names just in case there are trailing spaces
+    history_df.columns = history_df.columns.str.strip()
+
+    # [FIX] Fuzzy search for accuracy columns
+    train_acc_col = next((col for col in history_df.columns if 'acc' in col.lower() and 'val' not in col.lower()), None)
+    val_acc_col = next((col for col in history_df.columns if 'acc' in col.lower() and 'val' in col.lower()), None)
+
+    if train_acc_col:
+        axs[0].plot(history_df[train_acc_col], label="Train", color="#1f77b4", lw=2)
+    if val_acc_col:
+        axs[0].plot(history_df[val_acc_col], label="Validation", color="#ff7f0e", lw=2)
+
+    if not train_acc_col and not val_acc_col:
+        # If still missing, print available columns directly on the plot for debugging
+        cols_str = "\n".join(history_df.columns)
+        axs[0].text(0.5, 0.5, f"Accuracy metric not found.\nAvailable columns:\n{cols_str}",
+                    horizontalalignment='center', verticalalignment='center',
+                    transform=axs[0].transAxes, color="gray", fontsize=9)
+
     axs[0].set_title("Model Accuracy")
     axs[0].set_ylabel("Accuracy")
     axs[0].set_xlabel("Epoch")
     axs[0].legend(loc="lower right")
     axs[0].grid(True, linestyle="--", alpha=0.6)
 
-    axs[1].plot(history_df["loss"], label="Train", color="#1f77b4", lw=2)
-    axs[1].plot(history_df["val_loss"], label="Validation", color="#ff7f0e", lw=2)
+    # Plot Loss (Loss is generally consistently named "loss" and "val_loss")
+    train_loss_col = next((col for col in history_df.columns if 'loss' in col.lower() and 'val' not in col.lower()),
+                          "loss")
+    val_loss_col = next((col for col in history_df.columns if 'loss' in col.lower() and 'val' in col.lower()),
+                        "val_loss")
+
+    if train_loss_col in history_df.columns:
+        axs[1].plot(history_df[train_loss_col], label="Train", color="#1f77b4", lw=2)
+    if val_loss_col in history_df.columns:
+        axs[1].plot(history_df[val_loss_col], label="Validation", color="#ff7f0e", lw=2)
+
     axs[1].set_title("Model Loss (Binary Cross-Entropy)")
     axs[1].set_ylabel("Loss")
     axs[1].set_xlabel("Epoch")

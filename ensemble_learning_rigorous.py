@@ -25,28 +25,27 @@ class DatasetInfo:
 DATASETS_INFO: Dict[str, DatasetInfo] = {
     '0.5s': DatasetInfo(
         data='processed_master_datasets/master_dataset_0.5s.npz',
-        models_dir='saved_outputs_play/20260323-163632_0.5s/models'),
+        models_dir='saved_outputs_hybrid/20260324-134941_0.5s_CNN_LSTM_ATTENTION/models'),
     '1.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_1.0s.npz',
-        models_dir='saved_outputs_play/20260323-201436_1.0s/models'),
+        models_dir='saved_outputs_hybrid/20260325-033656_1.0s_CNN_LSTM_ATTENTION/models'),
     '2.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_2.0s.npz',
-        models_dir='saved_outputs_play/20260323-220314_2.0s/models'),
+        models_dir='saved_outputs_hybrid/20260325-115542_2.0s_CNN_LSTM_ATTENTION/models'),
     '4.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_4.0s.npz',
-        models_dir='saved_outputs_play/20260323-224227_4.0s/models'),
+        models_dir='saved_outputs_hybrid/20260325-132117_4.0s_CNN_LSTM_ATTENTION/models'),
     '5.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_5.0s.npz',
-        models_dir='saved_outputs_play/20260323-231310_5.0s/models'),
+        models_dir='saved_outputs_hybrid/20260325-140449_5.0s_CNN_LSTM_ATTENTION/models'),
     '10.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_10.0s.npz',
-        models_dir='saved_outputs_play/20260323-234451_10.0s/models'),
+        models_dir='saved_outputs_hybrid/20260325-144433_10.0s_CNN_LSTM_ATTENTION/models'),
 }
 
 REFERENCE_KEY = '0.5s'
 BATCH_SIZE = 128
 
-# Split data for threshold/weight optimization vs testing
 VAL_SPLIT_RATIO = 0.30
 TARGET_SENSITIVITY = 0.80
 MIN_PRECISION_FLOOR = 0.10
@@ -54,7 +53,7 @@ FIXED_THRESHOLD = 0.35
 MIN_MODELS_FOR_ENSEMBLE = 2
 MEDIAN_FILTER_WINDOW = 5
 
-OUTPUT_DIR = os.path.join('saved_outputs_play', 'ensemble_results_rigorous')
+OUTPUT_DIR = os.path.join('saved_outputs_hybrid', 'ensemble_results_rigorous')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 OUTPUT_POOLED_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_pooled_metrics.csv')

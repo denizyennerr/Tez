@@ -11,9 +11,9 @@ from matplotlib.patches import FancyBboxPatch
 # =============================================================================
 # ── CONFIGURATION  ────────────────────────────────────────────────────────────
 # =============================================================================
-TIMESTAMP = "saved_outputs_play/20260323-201436_1.0s"
-
-suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
+TIMESTAMP =  "saved_outputs_hybrid/20260325-144433_10.0s_CNN_LSTM_ATTENTION"
+# suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
+suffix = TIMESTAMP.split('/')[-1].split('_')[1]
 
 dataset_path = os.path.join(f'processed_master_datasets/master_dataset_{suffix}.npz')
 output_dir = TIMESTAMP
