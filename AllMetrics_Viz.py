@@ -6,8 +6,8 @@ import seaborn as sns
 # =============================================================================
 # ⚙️ Configuration & Academic Styling
 # =============================================================================
-RESULTS_CSV = "saved_outputs_play/ensemble_results_final/decision_fusion_macro_mean.csv"
-OUTPUT_DIR = os.path.join("saved_outputs_play", "ensemble_results_final", "plots")
+RESULTS_CSV = "saved_outputs_hybrid/ensemble_results_final/decision_fusion_macro_mean.csv"
+OUTPUT_DIR = os.path.join("saved_outputs_hybrid", "ensemble_results_final", "plots")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -27,7 +27,7 @@ plt.rcParams.update({
 sns.set_theme(style="ticks", context="paper")
 
 # =============================================================================
-# 1. Load Data
+# 1. Load Data & Set Custom Order for All Models
 # =============================================================================
 if not os.path.exists(RESULTS_CSV):
     raise FileNotFoundError(f"Could not find {RESULTS_CSV}. Please ensure it is in the correct directory.")
@@ -35,29 +35,91 @@ if not os.path.exists(RESULTS_CSV):
 df = pd.read_csv(RESULTS_CSV)
 df = df.drop(columns=['Decision Threshold', 'N_Subjects'], axis=1)
 
+# Define the logical order for ALL models
+full_order = [
+    "0.5s Individual",
+    "1.0s Individual",
+    "2.0s Individual",
+    "4.0s Individual",
+    "5.0s Individual",
+    "10.0s Individual",
+    "Ensemble (Hard Vote)",
+    "Ensemble (Soft Vote)"
+]
+
+# Convert 'Model' to an ordered categorical type and sort
+df['Model'] = pd.Categorical(df['Model'], categories=full_order, ordered=True)
+df_full = df.sort_values('Model').copy()
+
+# =============================================================================
+# 2. Overall Performance Heatmap (All Models)
+# =============================================================================
+plt.figure(figsize=(12, 8))
+
+# Set the Model as the index for the heatmap (it retains the sorted order)
+df_heatmap = df_full.set_index("Model")
+
+# Create Heatmap
+ax_heat = sns.heatmap(
+    df_heatmap,
+    annot=True,
+    fmt=".4f",
+    cmap="YlGnBu",
+    cbar_kws={'label': 'Score'},
+    vmin=0.2, vmax=1.0,
+    linewidths=0.5,       # Adds borders between cells
+    linecolor='lightgray' # Keeps the borders subtle
+)
+
+# Note: Consider removing the title if using a document caption.
+plt.title("Overall Performance Metrics Across All Models", pad=15)
+plt.ylabel("Model")
+plt.xlabel("Evaluation Metric")
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0) # Ensure y-labels are strictly horizontal
+
+plt.tight_layout()
+
+# Save Heatmap
+heatmap_path = os.path.join(OUTPUT_DIR, "all_models_comparison_heatmap.png")
+plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
+print(f"✅ Comparison Heatmap saved to: {heatmap_path}")
+plt.close()
+
+# =============================================================================
+# 3. Focused Grouped Bar Chart (1.0s vs Ensembles)
+# =============================================================================
+# Define ONLY the models we want to isolate for the bar chart
+target_models = [
+    "1.0s Individual",
+    "Ensemble (Hard Vote)",
+    "Ensemble (Soft Vote)"
+]
+
+# Filter the dataframe down to just those three
+df_filtered = df_full[df_full['Model'].isin(target_models)].copy()
+
+# Remove unused categories from the categorical variable so they don't appear in the legend
+df_filtered['Model'] = pd.Categorical(df_filtered['Model'], categories=target_models, ordered=True)
+
 # Melt DataFrame for Seaborn plotting (Grouped Bar Chart format)
-df_melted = df.melt(id_vars=["Model"], var_name="Metric", value_name="Score")
+df_melted = df_filtered.melt(id_vars=["Model"], var_name="Metric", value_name="Score")
 
-# =============================================================================
-# 2. Grouped Bar Chart (All Models Comparison)
-# =============================================================================
-plt.figure(figsize=(16, 7))
+plt.figure(figsize=(14, 6))
 
-# Use a colorblind-friendly palette; add edge colors for crisp bar boundaries
+# Use the 'viridis' palette as requested; add edge colors for crisp bar boundaries
 ax = sns.barplot(
     data=df_melted,
     x="Metric",
     y="Score",
     hue="Model",
-    palette="colorblind",
+    palette="viridis",
     edgecolor="black",
     linewidth=0.7,
     capsize=0.05
 )
 
-# Note: In a thesis, titles are often omitted in favor of LaTeX/Word figure captions.
-# You can comment out the next line if you prefer caption-only descriptions.
-plt.title("Performance Comparison Across Epoched & Ensemble Models", pad=15)
+plt.title("Performance Comparison: 1.0s Individual vs. Ensemble Models", pad=15)
 plt.ylabel("Score")
 plt.xlabel("Evaluation Metric")
 plt.ylim(0.0, 1.05)
@@ -71,45 +133,8 @@ sns.despine(trim=True, offset=5) # Removes top/right borders for a cleaner look
 plt.legend(title="Model Type", bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, edgecolor='black')
 plt.tight_layout()
 
-# Save plot (using bbox_inches='tight' prevents legend cutoff)
-barplot_path = os.path.join(OUTPUT_DIR, "all_models_comparison_barplot.png")
+# Save Bar Chart
+barplot_path = os.path.join(OUTPUT_DIR, "focused_1s_vs_ensemble_barplot.png")
 plt.savefig(barplot_path, dpi=300, bbox_inches='tight')
-print(f"✅ Comparison Barplot saved to: {barplot_path}")
-plt.close()
-
-# =============================================================================
-# 3. Overall Performance Heatmap
-# =============================================================================
-plt.figure(figsize=(12, 8))
-
-# Set the Model as the index for the heatmap
-df_heatmap = df.set_index("Model")
-
-# Create Heatmap
-# Switched to YlGnBu (Yellow-Green-Blue) which is standard in academia,
-# prints well in grayscale, and avoids red/green colorblindness issues.
-ax_heat = sns.heatmap(
-    df_heatmap,
-    annot=True,
-    fmt=".4f",
-    cmap="YlGnBu",
-    cbar_kws={'label': 'Score'},
-    vmin=0.2, vmax=1.0,
-    linewidths=0.5,       # Adds borders between cells
-    linecolor='lightgray' # Keeps the borders subtle
-)
-
-# Note: Similarly, consider removing the title if using a document caption.
-plt.title("Overall Performance Metrics Across All Models", pad=15)
-plt.ylabel("Model")
-plt.xlabel("Evaluation Metric")
-plt.xticks(rotation=45, ha='right')
-plt.yticks(rotation=0) # Ensure y-labels are strictly horizontal
-
-plt.tight_layout()
-
-# Save plot
-heatmap_path = os.path.join(OUTPUT_DIR, "all_models_comparison_heatmap.png")
-plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
-print(f"✅ Comparison Heatmap saved to: {heatmap_path}")
+print(f"✅ Focused Comparison Barplot saved to: {barplot_path}")
 plt.close()

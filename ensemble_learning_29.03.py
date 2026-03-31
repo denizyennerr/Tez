@@ -25,22 +25,22 @@ class DatasetInfo:
 DATASETS_INFO: Dict[str, DatasetInfo] = {
     '0.5s': DatasetInfo(
         data='processed_master_datasets/master_dataset_0.5s.npz',
-        models_dir='saved_outputs_play/20260323-163632_0.5s/models', weight=1.0),
+        models_dir='saved_outputs_hybrid/20260324-134941_0.5s_CNN_LSTM_ATTENTION', weight=1.0),
     '1.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_1.0s.npz',
-        models_dir='saved_outputs_play/20260323-201436_1.0s/models', weight=1.0),
+        models_dir='saved_outputs_hybrid/20260325-033656_1.0s_CNN_LSTM_ATTENTION', weight=1.0),
     '2.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_2.0s.npz',
-        models_dir='saved_outputs_play/20260323-220314_2.0s/models', weight=1.0),
+        models_dir='saved_outputs_hybrid/20260325-115542_2.0s_CNN_LSTM_ATTENTION', weight=1.0),
     '4.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_4.0s.npz',
-        models_dir='saved_outputs_play/20260323-224227_4.0s/models', weight=1.0),
+        models_dir='saved_outputs_hybrid/20260325-132117_4.0s_CNN_LSTM_ATTENTION', weight=1.0),
     '5.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_5.0s.npz',
-        models_dir='saved_outputs_play/20260323-231310_5.0s/models', weight=1.0),
+        models_dir='saved_outputs_hybrid/20260325-140449_5.0s_CNN_LSTM_ATTENTION', weight=1.0),
     '10.0s': DatasetInfo(
         data='processed_master_datasets/master_dataset_10.0s.npz',
-        models_dir='saved_outputs_play/20260323-234451_10.0s/models', weight=1.0),
+        models_dir='saved_outputs_hybrid/20260325-144433_10.0s_CNN_LSTM_ATTENTION', weight=1.0),
 }
 
 REFERENCE_KEY = '0.5s'
@@ -48,7 +48,7 @@ BATCH_SIZE = 128
 FIXED_THRESHOLD = 0.35
 MIN_MODELS_FOR_ENSEMBLE = 2
 
-OUTPUT_DIR = os.path.join('saved_outputs_play', 'ensemble_results_final')
+OUTPUT_DIR = os.path.abspath(os.path.join('saved_outputs_hybrid', 'ensemble_results_final'))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 OUTPUT_POOLED_CSV = os.path.join(OUTPUT_DIR, 'decision_fusion_pooled_metrics.csv')
@@ -117,8 +117,9 @@ def calculate_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) 
 
 def load_reference_subjects(reference_path: str) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, int]]:
     """Load reference labels (0.5s) to establish subject list and target lengths."""
-    logging.info('Loading reference dataset: %s', reference_path)
-    ref_data = np.load(reference_path)
+    ref_path_clean = os.path.abspath(reference_path)
+    logging.info('Loading reference dataset: %s', ref_path_clean)
+    ref_data = np.load(ref_path_clean)
     subjects = np.unique(ref_data['s'])
     y_true_by_subject: Dict[str, np.ndarray] = {}
     target_len_by_subject: Dict[str, int] = {}
@@ -137,7 +138,10 @@ def load_reference_subjects(reference_path: str) -> Tuple[np.ndarray, Dict[str, 
 
 
 def predict_subject_probs(x_subject: np.ndarray, model_path: str) -> np.ndarray:
-    model = load_model(model_path, compile=False)
+    # THE FIX: Keras/TF backend on Windows fails if it parses backslashes as escape sequences.
+    # We must explicitly force forward slashes for the Keras load_model function.
+    safe_model_path = model_path.replace('\\', '/')
+    model = load_model(safe_model_path, compile=False)
 
     dataset = tf.data.Dataset.from_tensor_slices(x_subject).batch(BATCH_SIZE)
     probs = model.predict(dataset, verbose=0).ravel()
@@ -171,23 +175,55 @@ def collect_probabilities(
     all_probs: Dict[str, Dict[str, np.ndarray]] = {k: {} for k in datasets_info.keys()}
 
     for res_key, info in datasets_info.items():
-        logging.info('Loading dataset for resolution %s: %s', res_key, info.data)
+        data_path = os.path.abspath(info.data)
+        logging.info('Loading dataset for resolution %s: %s', res_key, data_path)
 
-        if not os.path.exists(info.data):
-            logging.warning('Missing dataset file: %s', info.data)
+        if not os.path.exists(data_path):
+            logging.warning('Missing dataset file: %s', data_path)
             continue
 
-        data = np.load(info.data)
+        data = np.load(data_path)
         X = data['X']
         X = np.swapaxes(X, 0, 1)
         s = data['s']
 
         for subject in subjects:
             sub_str = str(subject)
-            model_path = os.path.join(info.models_dir, f'best_model_subject_{sub_str}.keras')
+            base_dir = os.path.abspath(info.models_dir)
 
-            if not os.path.exists(model_path):
-                logging.warning('Missing model for %s subject %s', res_key, sub_str)
+            # --- THE FIX: Smartly search for the model using common variations ---
+            possible_names = [
+                f'best_model_subject_{sub_str}.keras',
+                f'best_model_{sub_str}.keras',
+                f'{sub_str}_best_model.keras',
+                f'model_{sub_str}.keras',
+                f'{sub_str}.keras',
+                os.path.join(sub_str, 'best_model.keras'),
+                f'best_model_subject_{sub_str}.h5',
+                f'best_model_{sub_str}.h5',
+                f'{sub_str}_best_model.h5',
+                os.path.join(sub_str, 'best_model.h5')
+            ]
+
+            model_path = None
+            for name in possible_names:
+                p = os.path.join(base_dir, name)
+                if os.path.exists(p):
+                    model_path = p
+                    break
+
+            # If still not found, print out the directory contents to help you debug
+            if model_path is None:
+                try:
+                    dir_contents = os.listdir(base_dir)
+                    sample_files = ", ".join(dir_contents[:7]) + ("..." if len(dir_contents) > 7 else "")
+                except FileNotFoundError:
+                    sample_files = "[Directory itself not found!]"
+
+                logging.warning(
+                    f'Missing model for {res_key} subject {sub_str}. '
+                    f'Directory: {base_dir} | Sample contents: {sample_files}'
+                )
                 continue
 
             mask = s == subject
