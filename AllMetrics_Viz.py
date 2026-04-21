@@ -6,8 +6,8 @@ import seaborn as sns
 # =============================================================================
 # ⚙️ Configuration & Academic Styling
 # =============================================================================
-RESULTS_CSV = "saved_outputs_hybrid\ensemble_results_final\decision_fusion_macro_mean.csv"
-OUTPUT_DIR = os.path.join("saved_outputs_hybrid", "ensemble_results_final", "plots")
+RESULTS_CSV = "saved_outputs_play\ensemble_results_final\decision_fusion_macro_mean.csv"
+OUTPUT_DIR = os.path.join("saved_outputs_play", "ensemble_results_final", "plots")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -87,11 +87,11 @@ print(f"✅ Comparison Heatmap saved to: {heatmap_path}")
 plt.close()
 
 # =============================================================================
-# 3. Focused Grouped Bar Chart (1.0s vs Ensembles)
+# 3. Focused Grouped Bar Chart (4.0s vs Ensembles)
 # =============================================================================
 # Define ONLY the models we want to isolate for the bar chart
 target_models = [
-    "1.0s Individual",
+    "4.0s Individual",
     "Ensemble (Hard Vote)",
     "Ensemble (Soft Vote)"
 ]
@@ -119,7 +119,7 @@ ax = sns.barplot(
     capsize=0.05
 )
 
-plt.title("Performance Comparison: 1.0s Individual vs. Ensemble Models", pad=15)
+plt.title("Performance Comparison: 4.0s Individual vs. Ensemble Models", pad=15)
 plt.ylabel("Score")
 plt.xlabel("Evaluation Metric")
 plt.ylim(0.0, 1.05)
@@ -134,7 +134,7 @@ plt.legend(title="Model Type", bbox_to_anchor=(1.02, 1), loc='upper left', frame
 plt.tight_layout()
 
 # Save Bar Chart
-barplot_path = os.path.join(OUTPUT_DIR, "focused_1s_vs_ensemble_barplot.png")
+barplot_path = os.path.join(OUTPUT_DIR, "focused_4s_vs_ensemble_barplot.png")
 plt.savefig(barplot_path, dpi=300, bbox_inches='tight')
 print(f"✅ Focused Comparison Barplot saved to: {barplot_path}")
 plt.close()
