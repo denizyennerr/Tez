@@ -21,19 +21,6 @@ from sklearn.metrics import (
 )
 from IPython.display import display
 
-TIMESTAMP = "saved_outputs_play/20260323-163632_0.5s"
-
-suffix = TIMESTAMP.replace('_', '-').split('-')[-1]
-
-dataset_path = os.path.join(f'processed_master_datasets/master_dataset_{suffix}.npz')
-output_dir = TIMESTAMP
-
-models_dir = os.path.join(output_dir, "models")
-histories_dir = os.path.join(output_dir, "histories")
-plots_dir = os.path.join(output_dir, "plots")
-
-os.makedirs(plots_dir, exist_ok=True)
-
 # =============================================================================
 # 🚀 SENIOR DS CONFIGURATION (Synced with Training)
 # =============================================================================
@@ -151,12 +138,7 @@ def plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, subject, save_pat
     plt.close()
 
 
-def plot_aggregate_testing_evaluation(y_test_list, y_pred_prob_list, y_pred_class_list, save_path):
-    """
-    Plots the global aggregate evaluation. Modifed to show individual patient
-    traces and shaded standard deviation areas for ROC and PR curves.
-    """
-    # 1. Prepare global arrays for Confusion Matrix and Histogram
+def plot_aggregate_testing_evaluation(y_test_list, y_pred_prob_list, y_pred_class_list, suffix, save_path):
     y_test_all = np.concatenate(y_test_list)
     y_pred_prob_all = np.concatenate(y_pred_prob_list)
     y_pred_class_all = np.concatenate(y_pred_class_list)
@@ -164,7 +146,7 @@ def plot_aggregate_testing_evaluation(y_test_list, y_pred_prob_list, y_pred_clas
     cm = confusion_matrix(y_test_all, y_pred_class_all)
 
     fig = plt.figure(figsize=(18, 10))
-    fig.suptitle(f"Aggregate Testing Evaluation | All Subjects", fontsize=16, fontweight="bold")
+    fig.suptitle(f"Aggregate Testing Evaluation | All Subjects ({suffix})", fontsize=16, fontweight="bold")
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.4, wspace=0.35)
 
     # --- Panel 1: Confusion Matrix ---
@@ -185,11 +167,9 @@ def plot_aggregate_testing_evaluation(y_test_list, y_pred_prob_list, y_pred_clas
         fpr, tpr, _ = roc_curve(y_t, y_p)
         roc_auc = roc_auc_score(y_t, y_p)
         aucs.append(roc_auc)
-        # Interpolate TPR to a common FPR scale
         interp_tpr = np.interp(mean_fpr, fpr, tpr)
         interp_tpr[0] = 0.0
         tprs.append(interp_tpr)
-        # Plot individual faint line
         ax2.plot(fpr, tpr, color='steelblue', lw=1, alpha=0.2)
 
     mean_tpr = np.mean(tprs, axis=0)
@@ -197,10 +177,7 @@ def plot_aggregate_testing_evaluation(y_test_list, y_pred_prob_list, y_pred_clas
     mean_auc = np.mean(aucs)
     std_auc = np.std(aucs)
 
-    # Plot Mean ROC
     ax2.plot(mean_fpr, mean_tpr, color='blue', lw=2.5, label=f"Mean ROC (AUC = {mean_auc:.3f} $\pm$ {std_auc:.3f})")
-
-    # Shade Standard Deviation Area
     std_tpr = np.std(tprs, axis=0)
     tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
     tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
@@ -223,23 +200,17 @@ def plot_aggregate_testing_evaluation(y_test_list, y_pred_prob_list, y_pred_clas
         prec, rec, _ = precision_recall_curve(y_t, y_p)
         pr_auc = average_precision_score(y_t, y_p)
         pr_aucs.append(pr_auc)
-
-        # precision_recall_curve returns decreasing recall. Reverse them for np.interp
         rec, prec = rec[::-1], prec[::-1]
         interp_prec = np.interp(mean_recall, rec, prec)
         precs.append(interp_prec)
-        # Plot individual faint line
         ax3.plot(rec, prec, color='purple', lw=1, alpha=0.2)
 
     mean_prec = np.mean(precs, axis=0)
     mean_pr_auc = np.mean(pr_aucs)
     std_pr_auc = np.std(pr_aucs)
 
-    # Plot Mean PRC
     ax3.plot(mean_recall, mean_prec, color='indigo', lw=2.5,
              label=f"Mean PRC (AUC = {mean_pr_auc:.3f} $\pm$ {std_pr_auc:.3f})")
-
-    # Shade Standard Deviation Area
     std_prec = np.std(precs, axis=0)
     precs_upper = np.minimum(mean_prec + std_prec, 1)
     precs_lower = np.maximum(mean_prec - std_prec, 0)
@@ -266,7 +237,7 @@ def plot_aggregate_testing_evaluation(y_test_list, y_pred_prob_list, y_pred_clas
     plt.close()
 
 
-def plot_primary_metrics(summary_df, save_path):
+def plot_primary_metrics(summary_df, suffix, save_path):
     subjects = summary_df["subject"].astype(str)
     x = np.arange(len(subjects))
     width = 0.35
@@ -292,7 +263,7 @@ def plot_primary_metrics(summary_df, save_path):
     plt.close()
 
 
-def plot_secondary_metrics(summary_df, save_path, DECISION_THRESHOLD=0.3):
+def plot_secondary_metrics(summary_df, suffix, save_path, DECISION_THRESHOLD=0.3):
     subjects = summary_df["subject"].astype(str)
     x = np.arange(len(subjects))
     width = 0.20
@@ -318,145 +289,180 @@ def plot_secondary_metrics(summary_df, save_path, DECISION_THRESHOLD=0.3):
 
 
 # =============================================================================
-# %% Data Loading
+# %% Refactored Evaluation Function
 # =============================================================================
-print(f"Loading dataset from: {dataset_path}")
-data = np.load(dataset_path)
-X, y, groups = data["X"], data["y"], data["s"]
-X = np.swapaxes(X, 0, 1)
-logo = LeaveOneGroupOut()
+def evaluate_epoch(timestamp_dir):
+    """
+    Evaluates the model and generates aggregate plots for a specific epoch length directory.
+    """
+    print(f"\n\n{'=' * 80}")
+    print(f"🚀  STARTING EVALUATION FOR: {timestamp_dir}")
+    print(f"{'=' * 80}\n")
+
+    suffix = timestamp_dir.replace('_', '-').split('-')[-1]
+    dataset_path = os.path.join(f'processed_master_datasets/master_dataset_{suffix}.npz')
+
+    models_dir = os.path.join(timestamp_dir, "models")
+    histories_dir = os.path.join(timestamp_dir, "histories")
+    plots_dir = os.path.join(timestamp_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
+    # ── Data Loading ────────────────────────────────────────────────────────
+    print(f"Loading dataset from: {dataset_path}")
+    if not os.path.exists(dataset_path):
+        print(f"❌ Error: Dataset not found at {dataset_path}. Skipping...")
+        return
+
+    data = np.load(dataset_path)
+    X, y, groups = data["X"], data["y"], data["s"]
+    X = np.swapaxes(X, 0, 1)
+    logo = LeaveOneGroupOut()
+
+    # ── LOSO Evaluation Loop ──────────────────────────────────────────────────
+    all_reports = []
+    all_histories = []
+
+    global_y_test_list = []
+    global_y_pred_prob_list = []
+    global_y_pred_class_list = []
+
+    print(f"📁 Searching for models in: {models_dir}")
+
+    for train_idx, test_idx in logo.split(X, y, groups=groups):
+        X_test = X[test_idx]
+        y_test = y[test_idx]
+        current_test_subject = groups[test_idx][0]
+
+        model_path = os.path.join(models_dir, f"best_model_subject_{current_test_subject}.keras")
+        history_path = os.path.join(histories_dir, f"history_subject_{current_test_subject}.csv")
+
+        if not os.path.exists(model_path):
+            print(f"⚠️  Skipping Subject {current_test_subject} — model not found at: {model_path}")
+            continue
+
+        print(f"\n{'=' * 60}")
+        print(f"🧪  Evaluating Subject: {current_test_subject} ({suffix})")
+        print(f"{'=' * 60}")
+
+        # ✅ FIX: compile=False explicitly ignores custom metric registration requirements during load
+        model = tf.keras.models.load_model(model_path, compile=False)
+
+        history_df = pd.read_csv(history_path)
+        all_histories.append(history_df)
+
+        # ── Test-set predictions ─────────────────────────────────────────────
+        y_pred_prob = model.predict(X_test, batch_size=BATCH_SIZE, verbose=0).ravel()
+        y_pred_class = (y_pred_prob >= DECISION_THRESHOLD).astype(int)
+
+        global_y_test_list.append(y_test)
+        global_y_pred_prob_list.append(y_pred_prob)
+        global_y_pred_class_list.append(y_pred_class)
+
+        # ── Compute Metrics ──────────────────────────────────────────────────
+        auroc = roc_auc_score(y_test, y_pred_prob)
+        auprc = average_precision_score(y_test, y_pred_prob)
+        print(f" AUROC = {auroc:.4f}  |  AUPRC = {auprc:.4f}")
+
+        print(f"  Fixed Threshold = {DECISION_THRESHOLD}")
+        report_dict = classification_report(y_test, y_pred_class, target_names=["Normal", "Seizure"], output_dict=True,
+                                            zero_division=0)
+        report_df = pd.DataFrame(report_dict).transpose()
+        print("\n  Classification Report:")
+        display(report_df)
+
+        cm = confusion_matrix(y_test, y_pred_class)
+        tn, fp, fn, tp = cm.ravel()
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        balanced_acc = balanced_accuracy_score(y_test, y_pred_class)
+        seizure_f1 = report_dict["Seizure"]["f1-score"]
+
+        print(f"  Sensitivity (Recall) = {sensitivity:.4f}")
+        print(f"  Specificity          = {specificity:.4f}")
+        print(f"  Balanced Acc         = {balanced_acc:.4f}")
+        print(f"  Seizure F1           = {seizure_f1:.4f}")
+
+        all_reports.append({
+            "subject": current_test_subject,
+            "threshold": DECISION_THRESHOLD,
+            "auroc": auroc,
+            "auprc": auprc,
+            "accuracy": report_dict["accuracy"],
+            "balanced_accuracy": balanced_acc,
+            "sensitivity": sensitivity,
+            "specificity": specificity,
+            "seizure_f1": seizure_f1,
+        })
+
+        # ── Save individual plots ────────────────────────────────────────────
+        plot_training_history(history_df, current_test_subject,
+                              os.path.join(plots_dir, f"subject_{current_test_subject}_training_history.png"))
+        plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, current_test_subject,
+                                os.path.join(plots_dir, f"subject_{current_test_subject}_testing_evaluation.png"))
+
+        del model
+        tf.keras.backend.clear_session()
+
+    # ── Aggregate Results Summary & Global Plots ──────────────────────────────
+    if all_reports:
+        summary_df = pd.DataFrame(all_reports)
+
+        print(f"\n{'=' * 60}")
+        print(f"🏆  Overall LOSO Summary ({suffix})")
+        print(f"{'=' * 60}")
+        display(summary_df)
+
+        summary_csv_path = os.path.join(timestamp_dir, f"overall_loso_summary_{suffix}.csv")
+        summary_df.to_csv(summary_csv_path, index=False)
+        print(f"\n✅  Summary saved to: {summary_csv_path}")
+
+        print(f"\n📊  Aggregate Statistics for {suffix} (mean ± std across subjects):")
+        metrics = ["auroc", "auprc", "sensitivity", "specificity", "balanced_accuracy", "seizure_f1"]
+        col_width = 22
+        print(f"  {'Metric':<{col_width}} {'Mean':>8}   {'Std':>8}   {'Min':>8}   {'Max':>8}")
+        print(f"  {'-' * 60}")
+        for m in metrics:
+            print(
+                f"  {m:<{col_width}} {summary_df[m].mean():>8.4f}   {summary_df[m].std():>8.4f}   {summary_df[m].min():>8.4f}   {summary_df[m].max():>8.4f}")
+
+        print("\n📈  Generating Aggregate Evaluation Plots...")
+
+        aggregate_eval_path = os.path.join(plots_dir, f"aggregate_testing_evaluation_{suffix}.png")
+        plot_aggregate_testing_evaluation(global_y_test_list, global_y_pred_prob_list, global_y_pred_class_list, suffix,
+                                          aggregate_eval_path)
+        print(f"✅  Global testing evaluation plot saved to: {aggregate_eval_path}")
+
+        primary_plot_path = os.path.join(plots_dir, f"aggregate_primary_metrics_{suffix}.png")
+        plot_primary_metrics(summary_df, suffix, primary_plot_path)
+        print(f"✅  Primary aggregate plot saved to: {primary_plot_path}")
+
+        secondary_plot_path = os.path.join(plots_dir, f"aggregate_secondary_metrics_{suffix}.png")
+        plot_secondary_metrics(summary_df, suffix, secondary_plot_path, DECISION_THRESHOLD)
+        print(f"✅  Secondary aggregate plot saved to: {secondary_plot_path}")
+
+        avg_history_df = calculate_average_history(all_histories)
+        if avg_history_df is not None:
+            avg_history_path = os.path.join(plots_dir, f"aggregate_training_history_{suffix}.png")
+            plot_average_training_history(avg_history_df, avg_history_path)
+            print(f"✅  Average training history plot saved to: {avg_history_path}")
+
 
 # =============================================================================
-# %% LOSO Evaluation Loop
+# %% Main Execution: Loop Over Epoch Lengths
 # =============================================================================
-all_reports = []
-all_histories = []
+if __name__ == "__main__":
+    # Fill in the exact directory names/timestamps for your epoch lengths here
+    EPOCH_TIMESTAMPS = [
+        "saved_outputs_play/20260323-163632_0.5s",
+        "saved_outputs_play/20260323-201436_1.0s",  # Replace with actual directory
+        "saved_outputs_play/20260323-220314_2.0s",  # Replace with actual directory
+        "saved_outputs_play/20260323-224227_4.0s",  # Replace with actual directory
+        "saved_outputs_play/20260323-231310_5.0s",  # Replace with actual directory
+        "saved_outputs_play/20260323-234451_10.0s"  # Replace with actual directory
+    ]
 
-global_y_test_list = []
-global_y_pred_prob_list = []
-global_y_pred_class_list = []
-
-print(f"📁 Searching for models in: {models_dir}")
-
-for train_idx, test_idx in logo.split(X, y, groups=groups):
-    X_test = X[test_idx]
-    y_test = y[test_idx]
-    current_test_subject = groups[test_idx][0]
-
-    model_path = os.path.join(models_dir, f"best_model_subject_{current_test_subject}.keras")
-    history_path = os.path.join(histories_dir, f"history_subject_{current_test_subject}.csv")
-
-    if not os.path.exists(model_path):
-        print(f"⚠️  Skipping Subject {current_test_subject} — model not found at: {model_path}")
-        continue
-
-    print(f"\n{'=' * 60}")
-    print(f"🧪  Evaluating Subject: {current_test_subject}")
-    print(f"{'=' * 60}")
-
-    model = tf.keras.models.load_model(model_path)
-    history_df = pd.read_csv(history_path)
-    all_histories.append(history_df)
-
-    # ── Test-set predictions ──────────────────────────────────────────────────
-    y_pred_prob = model.predict(X_test, batch_size=BATCH_SIZE, verbose=0).ravel()
-    y_pred_class = (y_pred_prob >= DECISION_THRESHOLD).astype(int)
-
-    # 🌟 NEW: Append the predictions to global lists AFTER they are generated
-    global_y_test_list.append(y_test)
-    global_y_pred_prob_list.append(y_pred_prob)
-    global_y_pred_class_list.append(y_pred_class)
-
-    # =========================================================================
-    # PRIMARY METRICS (threshold-independent)
-    # =========================================================================
-    auroc = roc_auc_score(y_test, y_pred_prob)
-    auprc = average_precision_score(y_test, y_pred_prob)
-    print(f" AUROC = {auroc:.4f}  |  AUPRC = {auprc:.4f}")
-
-    print(f"  Fixed Threshold = {DECISION_THRESHOLD}")
-    report_dict = classification_report(y_test, y_pred_class, target_names=["Normal", "Seizure"], output_dict=True,
-                                        zero_division=0)
-    report_df = pd.DataFrame(report_dict).transpose()
-    print("\n  Classification Report:")
-    display(report_df)
-
-    cm = confusion_matrix(y_test, y_pred_class)
-    tn, fp, fn, tp = cm.ravel()
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    balanced_acc = balanced_accuracy_score(y_test, y_pred_class)
-    seizure_f1 = report_dict["Seizure"]["f1-score"]
-
-    print(f"  Sensitivity (Recall) = {sensitivity:.4f}")
-    print(f"  Specificity          = {specificity:.4f}")
-    print(f"  Balanced Acc         = {balanced_acc:.4f}")
-    print(f"  Seizure F1           = {seizure_f1:.4f}")
-
-    all_reports.append({
-        "subject": current_test_subject,
-        "threshold": DECISION_THRESHOLD,
-        "auroc": auroc,
-        "auprc": auprc,
-        "accuracy": report_dict["accuracy"],
-        "balanced_accuracy": balanced_acc,
-        "sensitivity": sensitivity,
-        "specificity": specificity,
-        "seizure_f1": seizure_f1,
-    })
-
-    # ── Save individual plots ──────────────────────────────────────────────────
-    plot_training_history(history_df, current_test_subject,
-                          os.path.join(plots_dir, f"subject_{current_test_subject}_training_history.png"))
-    plot_testing_evaluation(y_test, y_pred_prob, y_pred_class, current_test_subject,
-                            os.path.join(plots_dir, f"subject_{current_test_subject}_testing_evaluation.png"))
-
-    del model
-    tf.keras.backend.clear_session()
-
-# =============================================================================
-# %% Aggregate Results Summary & Global Plots
-# =============================================================================
-if all_reports:
-    summary_df = pd.DataFrame(all_reports)
-
-    print(f"\n{'=' * 60}")
-    print("🏆  Overall LOSO Summary")
-    print(f"{'=' * 60}")
-    display(summary_df)
-
-    summary_csv_path = os.path.join(output_dir, f"overall_loso_summary_{suffix}.csv")
-    summary_df.to_csv(summary_csv_path, index=False)
-    print(f"\n✅  Summary saved to: {summary_csv_path}")
-
-    print("\n📊  Aggregate Statistics (mean ± std across subjects):")
-    metrics = ["auroc", "auprc", "sensitivity", "specificity", "balanced_accuracy", "seizure_f1"]
-    col_width = 22
-    print(f"  {'Metric':<{col_width}} {'Mean':>8}   {'Std':>8}   {'Min':>8}   {'Max':>8}")
-    print(f"  {'-' * 60}")
-    for m in metrics:
-        print(
-            f"  {m:<{col_width}} {summary_df[m].mean():>8.4f}   {summary_df[m].std():>8.4f}   {summary_df[m].min():>8.4f}   {summary_df[m].max():>8.4f}")
-
-    # 🌟 UPDATED: Generating Aggregate Evaluation Plot with Confidence Intervals
-    print("\n📈  Generating Aggregate Evaluation Plot...")
-
-    aggregate_eval_path = os.path.join(plots_dir, f"aggregate_testing_evaluation_{suffix}.png")
-    # Note: We now pass the lists directly instead of the flattened arrays
-    plot_aggregate_testing_evaluation(global_y_test_list, global_y_pred_prob_list, global_y_pred_class_list,
-                                      aggregate_eval_path)
-    print(f"✅  Global testing evaluation plot saved to: {aggregate_eval_path}")
-
-    primary_plot_path = os.path.join(plots_dir, f"aggregate_primary_metrics_{suffix}.png")
-    plot_primary_metrics(summary_df, primary_plot_path)
-    print(f"✅  Primary aggregate plot saved to: {primary_plot_path}")
-
-    secondary_plot_path = os.path.join(plots_dir, f"aggregate_secondary_metrics_{suffix}.png")
-    plot_secondary_metrics(summary_df, secondary_plot_path, DECISION_THRESHOLD)
-    print(f"✅  Secondary aggregate plot saved to: {secondary_plot_path}")
-
-    avg_history_df = calculate_average_history(all_histories)
-    if avg_history_df is not None:
-        avg_history_path = os.path.join(plots_dir, f"aggregate_training_history_{suffix}.png")
-        plot_average_training_history(avg_history_df, avg_history_path)
-        print(f"✅  Average training history plot saved to: {avg_history_path}")
+    for timestamp in EPOCH_TIMESTAMPS:
+        if os.path.exists(timestamp):
+            evaluate_epoch(timestamp)
+        else:
+            print(f"\n⚠️  Directory {timestamp} does not exist. Please update the path.")
