@@ -6,6 +6,7 @@ import gc
 DATA_DIR = "processed_npz_files_0.5s"
 save_as= 'master_dataset_0.5s.npz'
 
+
 all_subjects_data = []
 all_labels = []
 subject_mapping = []  # Her pencerenin hangi hastaya ait olduğunu tutacak
