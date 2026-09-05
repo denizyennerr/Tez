@@ -7,11 +7,8 @@ Original file is located at
     https://colab.research.google.com/drive/1mEKXxKn2e1vwjEpZT_BA2hDQv-532Vsn
 """
 
-from google.colab import drive
-drive.mount('/content/drive')
 
 import os
-os.chdir('/content/drive/MyDrive/Tez_Tuni')
 
 print(f"Current Working Directory set to: {os.getcwd()}")
 
@@ -286,12 +283,11 @@ PREFERRED_FILES = [
 ]
 
 SEARCH_ROOTS = [
-    '.',
-    '/content/drive/MyDrive/Tez_Tuni',
+    '.'
 ]
 
-DRIVE_CACHE = '/content/npy_cache'   # persists across runtimes
-LOCAL_CACHE = '/content/npy_cache'                 # fast local disk for memmap
+DRIVE_CACHE = '/tmp/npy_cache'   # persists across runtimes
+LOCAL_CACHE = '/tmp/npy_cache'                 # fast local disk for memmap
 
 # =============================================================================
 # Streaming .npz -> .npy memmap conversion
@@ -313,13 +309,13 @@ def _stream_member(npz_path, member, out_path, dtype=np.float32, chunk=512):
             raise ValueError(
                 f"'{member}' is Fortran-ordered; re-save it C-contiguous first."
             )
-
-        out = npformat.open_memmap(out_path, mode='w+', dtype=dtype, shape=shape)
-        row_bytes = int(np.prod(shape[1:])) * src_dtype.itemsize
-        for start in range(0, shape[0], chunk):
-            n = min(chunk, shape[0] - start)
+        optimized_shape = (shape[0], 100000, 18)
+        out = npformat.open_memmap(out_path, mode='w+', dtype=dtype, shape=optimized_shape)
+        row_bytes = int(np.prod(optimized_shape[1:])) * src_dtype.itemsize
+        for start in range(0, optimized_shape[0], chunk):
+            n = min(chunk, optimized_shape[0] - start)
             buf = f.read(row_bytes * n)
-            arr = np.frombuffer(buf, dtype=src_dtype).reshape((n,) + shape[1:])
+            arr = np.frombuffer(buf, dtype=src_dtype).reshape((n,) + optimized_shape[1:])
             out[start:start + n] = arr.astype(dtype, copy=False)
         out.flush()
         del out
@@ -357,7 +353,10 @@ def npz_to_memmap(npz_path, drive_cache=DRIVE_CACHE, local_cache=LOCAL_CACHE):
             else:
                 _stream_member(npz_path, member, tmp, dtype=dt)
             os.replace(tmp, lpath)
-            shutil.copyfile(lpath, dpath)         # persist for future runtimes
+            try:
+                shutil.copyfile(lpath, dpath)         # persist for future runtimes
+            except shutil.SameFileError:
+                print("passing local duplication")
         elif not os.path.exists(lpath):
             shutil.copyfile(dpath, lpath)         # sequential bulk copy is fast
 

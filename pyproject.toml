@@ -3,7 +3,7 @@ name = "seeg"
 version = "0.1.0"
 description = "Multi-resolution deep learning framework for seizure detection in multi-channel EEG (CHB-MIT Scalp EEG Database)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = [
     "numpy",
     "pandas",

@@ -77,3 +77,34 @@ Combines predictions from multiple models trained on different window sizes (e.g
 * `model.py` / `CNN-LSTM-Attention.py` — Neural Network architectures.
 * `handy/` — Contains utility scripts like `preprocess_utility.py` (which uses MNE for EDF parsing).
 * `data-understanding/` — Directory containing exploratory Jupyter notebooks (`preprocessing.ipynb`, `data_analysis.ipynb`) and raw datasets.
+
+
+
+## ToDo (Mert):
+- Improve data loading
+- Learn what the x is in (x, y, z) (processed datasets.npz) (what is sample)
+- LOGO what is leave one group out?
+- Solve reshape error in data loading during "y" loading:
+Exception has occurred: ValueError       (note: full exception trace is shown but execution is paused at: _run_module_as_main)
+cannot reshape array of size 1350380 into shape (512,100000,18)
+  File "/home/mert/repos/seeg/kan_cnn_eval.py", line 318, in _stream_member
+    arr = np.frombuffer(buf, dtype=src_dtype).reshape((n,) + optimized_shape[1:])
+  File "/home/mert/repos/seeg/kan_cnn_eval.py", line 354, in npz_to_memmap
+    _stream_member(npz_path, member, tmp, dtype=dt)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mert/repos/seeg/kan_cnn_eval.py", line 597, in <module>
+    X, y, groups = npz_to_memmap(dataset_path)
+                   ~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/home/mert/.local/share/uv/python/cpython-3.13.12-linux-x86_64-gnu/lib/python3.13/runpy.py", line 88, in _run_code
+    exec(code, run_globals)
+  File "/home/mert/.local/share/uv/python/cpython-3.13.12-linux-x86_64-gnu/lib/python3.13/runpy.py", line 198, in _run_module_as_main (Current frame)
+    return _run_code(code, main_globals, None,
+ValueError: cannot reshape array of size 1350380 into shape (512,100000,18)
+
+## Workflow
+- Preprocess 
+- Data segmentation (based on window 0.5s 1s 2s)
+- Loso ? 
+
+- Data loading
+    - Load from drive (batches) > Write on local (batches) > 

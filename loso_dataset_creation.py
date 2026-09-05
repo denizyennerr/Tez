@@ -3,8 +3,8 @@ import numpy as np
 from collections import defaultdict
 import gc
 
-DATA_DIR = "processed_npz_files_0.5s"
-save_as= 'master_dataset_0.5s.npz'
+DATA_DIR = "data/processed"
+save_as= "data/raw/master.npz"
 
 all_subjects_data = []
 all_labels = []
@@ -15,7 +15,7 @@ npz_files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith(".npz")])
 print(f"📁 Toplam {len(npz_files)} dosya işleniyor...")
 
 for file in npz_files:
-    subject_id = file.split("_")[0]  # Örn: 'chb01'
+=    subject_id = file.split("_")[0]  # Örn: 'chb01'
     path = os.path.join(DATA_DIR, file)
 
     data = np.load(path)
