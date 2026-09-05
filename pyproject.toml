@@ -1,0 +1,23 @@
+[project]
+name = "seeg"
+version = "0.1.0"
+description = "Multi-resolution deep learning framework for seizure detection in multi-channel EEG (CHB-MIT Scalp EEG Database)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "seaborn",
+    "scikit-learn",
+    "tensorflow",
+    "mne",
+    "pyedflib",
+    "psutil",
+    "ipython",
+    "jupyter",
+]
+
+[tool.setuptools]
+py-modules = []
